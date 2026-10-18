@@ -277,6 +277,18 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         old = (datetime.now() - timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S")
         self.assertEqual(gmail_watch.left_today({"name": "HR strategy", "found": [{"file": "x", "at": old}]}, {}), 2)
 
+    async def test_one_company_timeout_does_not_stop_whole_scan(self):
+        orig = self.hub.call
+
+        async def call(role, cmd, timeout=600, **args):
+            if cmd == "goto_quiet" and "Belle" in args.get("url", ""):
+                raise TimeoutError()                    # Gmail page ne der se jawab diya (khaali error)
+            return await orig(role, cmd, timeout=timeout, **args)
+        self.hub.call = call
+        gmail_watch.api_action("gmail_add", {"name": "Belle Clinic, Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertIn("t1|Wear Wood 9.docx", gmail_watch.load()["opened"])   # Belle ka masla, Wear Wood phir bhi
+
     def test_spreadsheet_paste_adds_every_name(self):
         gmail_watch.api_action("gmail_add", {"name": "1. Wear Wood\tBelle Clinic\r\n2) Linked up\n\nWear Wood\n• Molen tax"})
         self.assertEqual([i["name"] for i in gmail_watch.load()["items"]], ["Wear Wood", "Belle Clinic", "Linked up", "Molen tax"])
