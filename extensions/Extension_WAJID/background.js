@@ -240,6 +240,18 @@ const HANDLERS = {
     }
     throw new Error('save image timeout');
   },
+  async download_url({ url, timeout = 90000 }) {
+    // "Save image as" jaisa: Chrome khud file download kare (cookies ke saath) -> file ka path
+    const id = await chrome.downloads.download({ url, conflictAction: 'uniquify', saveAs: false });
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      const [d] = await chrome.downloads.search({ id });
+      if (d && d.state === 'complete') return d.filename;
+      if (d && d.state === 'interrupted') throw new Error('download interrupted: ' + (d.error || ''));
+      await sleep(800);
+    }
+    throw new Error('download timeout');
+  },
   async wait_download({ since, timeout = 90000 }) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
@@ -318,6 +330,34 @@ const PAGE = {
       if (generated && i.complete && i.naturalWidth > 0 && !imgs.includes(src)) imgs.push(src);
     }
     return { imgs, boundary_found: true };
+  },
+  img_canvas_b64: function (src) {
+    // page par DIKH rahi image (jo ChatGPT ne bana di) ko seedha screen se uthao — download link atke to bhi
+    const img = [...document.querySelectorAll('img')].find(i => (i.currentSrc || i.src) === src && i.complete && i.naturalWidth > 0);
+    if (!img) return { error: 'image page par nahi' };
+    try {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      return { b64: c.toDataURL('image/png').split(',')[1] };
+    } catch (e) { return { error: String(e && e.message || e) }; }
+  },
+  turn_retry: function (click) {
+    // mere aakhri message ke baad ChatGPT ka "Try again" / "Retry" button (image glitch ke baad)
+    const vis = e => !!(e && e.offsetParent);
+    const main = document.querySelector('main') || document.body;
+    const userSel = '[data-message-author-role="user"], [data-turn="user"], [class~="user-message"]';
+    const users = [...main.querySelectorAll(userSel)];
+    const lastUser = users[users.length - 1];
+    const after = el => !lastUser || (lastUser.compareDocumentPosition(el) & 4);
+    const btn = [...main.querySelectorAll('button, [role="button"]')].filter(b => vis(b) && after(b)).find(b => {
+      const t = ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).trim();
+      return /^(try again|retry)\b/i.test(t) || /\b(try again|retry)$/i.test(t);
+    });
+    if (!btn) return { found: false };
+    if (click) for (const t of ['mouseover', 'mousedown', 'mouseup', 'click'])
+      btn.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+    return { found: true, clicked: !!click };
   },
   inspect_last: function (sel, n) {
     // jaanch: aakhri n elements ke upar ke parents (tag/class/data-*) — page ka dhancha samajhne ke liye

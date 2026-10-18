@@ -15,7 +15,7 @@ class FakeHub:
     def __init__(self, edit_result="ok"):
         self.clients = {"designer": object()}
         self.pause_requested = self.paused = self.running = False
-        self.current, self.watching = {}, False
+        self.current, self.watching, self.designer_busy = {}, False, False
         self.docs = [{"url": "https://docs.google.com/document/d/old/edit", "title": "Old - Google Docs"}]
         self.edit_result, self.calls, self.url, self.links, self.urls = edit_result, [], "", [], []
 
@@ -85,13 +85,26 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         await gmail_watch.scan()                          # dobara scan: wahi file dobara nahi
         self.assertEqual(self.hub.calls.count("gmail_edit"), 1)
 
-    async def test_never_touches_gmail_while_a_file_is_being_made(self):
+    async def test_scan_waits_while_images_downloading(self):
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        self.hub.running, self.hub.current = True, {"file": "Belle Clinic 9"}
+        self.hub.designer_busy = True                    # Designer ya ChatGPT image download
+        await gmail_watch.scan(force=True)
+        self.assertEqual(self.hub.calls, [])
+
+    async def test_scan_runs_while_file_waits_on_chatgpt(self):
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        self.hub.running, self.hub.current = True, {"file": "Belle Clinic 9"}
+        self.hub.designer_busy = False                   # ChatGPT generate ka wait — scan OK
+        await gmail_watch.scan(force=True)
+        self.assertIn("t1|Wear Wood 9.docx", gmail_watch.load()["opened"])  # nayi file line mein
+        self.assertEqual(self.started, [])               # run pehle se chal raha -> dobara START nahi
+
+
+    async def test_paused_run_no_gmail(self):
         gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
         gmail_watch.api_action("gmail_toggle", {"on": "1"})
-        self.hub.running, self.hub.current = True, {"file": "Belle Clinic 9"}
-        await gmail_watch.scan()
-        self.assertEqual(self.hub.calls, [])
-        self.hub.current, self.hub.paused = {}, True      # run pause par -> bhi nahi
+        self.hub.running, self.hub.paused = True, True     # run pause par -> Gmail nahi
         await gmail_watch.scan()
         self.assertEqual(self.hub.calls, [])
 
@@ -250,6 +263,19 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("open_tab", self.hub.calls)        # ban chuki file (doc id se) dobara nahi khuli
         rec = gmail_watch.load()["opened"]["t1|1p-CnuOF3ahd308lq8g4_ADm_2ieKnForK-23yBKsc9o"]
         self.assertEqual(rec["note"], "pehle ban chuki")
+
+    def test_limit_is_24_hours_not_calendar_day_and_counts_any_opened_file(self):
+        from datetime import datetime, timedelta
+        late = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")  # kal raat (12 baje se pehle bhi ho)
+        item = {"name": "HR strategy", "found": [{"file": "HR Strategy Studio 8", "at": late},
+                                                 {"file": "1uJnRGX2nJO03-Whi_4xWQS3yiD58FaTwCnMRPBU7JOY", "at": late}]}
+        state = {"1uJnRGX2nJO03-Whi_4xWQS3yiD58FaTwCnMRPBU7JOY": {"status": "done", "title": "HR Strategy Studio 9 - Google Docs",
+                                                                  "at": datetime.now().isoformat()},
+                 "1cyK": {"status": "done", "title": "HR Strategy Studio 10 - Google Docs", "at": datetime.now().isoformat()}}
+        self.assertEqual(len(gmail_watch.recent_files(item, state)), 3)   # HR 9 do dafa nahi gina
+        self.assertLessEqual(gmail_watch.left_today(item, state), 0)       # 12 baje reset nahi
+        old = (datetime.now() - timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S")
+        self.assertEqual(gmail_watch.left_today({"name": "HR strategy", "found": [{"file": "x", "at": old}]}, {}), 2)
 
     def test_spreadsheet_paste_adds_every_name(self):
         gmail_watch.api_action("gmail_add", {"name": "1. Wear Wood\tBelle Clinic\r\n2) Linked up\n\nWear Wood\n• Molen tax"})

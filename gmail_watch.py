@@ -1,14 +1,15 @@
-"""Gmail watch list (dashboard se): aap companies ki list do -> har 30 second Designer profile ki Gmail mein
+"""Gmail watch list (dashboard se): aap companies ki list do -> Designer profile ki Gmail mein
 un ki email ki .docx dhoondo -> "Edit with Google Docs" se kholo -> automation khud post banaye.
 
-Asal automation par asar NAHI: yeh sirf tab chalta hai jab list ON ho, Designer connected ho, koi file ban na
-rahi ho aur run PAUSE na ho. Apni alag Gmail tab (script ke group mein). Koi bhi masla -> sirf log, server chalta rahe.
-Record: Output\\gmail_watch.json"""
+Chalta hai jab list ON ho, Designer connected ho, aur run PAUSE na ho. File ban rahi ho to bhi scan
+chal sakta hai (ChatGPT generate wait / files ke beech / idle). Thori der rukta hai jab: Designer
+docs/images parh raha ho, YA ChatGPT se banai image download ho rahi ho. Apni alag Gmail tab.
+Koi bhi masla -> sirf log, server chalta rahe. Record: Output\\gmail_watch.json"""
 import asyncio
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 S = None  # server module (setup() se)
@@ -49,14 +50,15 @@ def now():
 
 
 def blocked():
-    """Asal automation ko na chhuo: file ban rahi ho / run pause ho / Designer na ho -> scan nahi."""
+    """Scan rukhe: Designer na ho, run PAUSE, ya image/doc download chal raha ho."""
     hub = S.HUB
     if "designer" not in hub.clients:
         return "Designer profile connected nahi"
     if hub.pause_requested or hub.paused:
         return "Run PAUSE par hai — Gmail scan ruka hua"
-    if hub.running and (hub.current.get("file") or not getattr(hub, "watching", False)):
-        return "File ban rahi hai — us ke baad scan hoga"
+    # ChatGPT generate wait mein scan chale; download / Designer docs ke dauran wait
+    if hub.running and getattr(hub, "designer_busy", False):
+        return "Image / docs download chal raha hai — thori der mein scan"
     return None
 
 
@@ -71,12 +73,41 @@ def per_day():
     return max(1, int(S.CFG.get("gmail_max_per_day", 2)))
 
 
-def left_today(item):
-    return per_day() - len(found_today(item))
+def _cutoff():
+    """Had pichle 24 GHANTE par (12 baje date badalne se dobara 2 nahi khulti — HR Strategy 10 wala masla)."""
+    return (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def found_today(item):
-    return [f for f in item.get("found") or [] if f.get("at", "").startswith(today())]
+    """Pichle 24 ghante mein Gmail se is company ki khuli files (dashboard 'x/2')."""
+    cut = _cutoff()
+    return [f for f in item.get("found") or [] if f.get("at", "") >= cut]
+
+
+def recent_files(item, state=None):
+    """Pichle 24 ghante mein is company ki files — Gmail se khuli YA kisi bhi tarah khul kar bani (state).
+    Har file ek dafa gini jati hai (doc id / naam se)."""
+    cut = _cutoff()
+    ids = set()
+    for f in found_today(item):
+        ids.add(f.get("doc") or (f["file"] if re.fullmatch(r"[\w-]{25,}", f.get("file", "")) else S.norm(f.get("file", ""))))
+    key = S.norm(item["name"])
+    for doc_id, v in (state or {}).items():
+        at = str(v.get("at", "")).replace("T", " ")
+        title = S.norm(S.folder_of(v.get("title", "")))
+        if v.get("status") == "done" and at >= cut and key and (key in title or key.replace(" ", "") in title.replace(" ", "")):
+            ids.add(doc_id)
+    return ids
+
+
+def left_today(item, state=None):
+    """Is company ki aur kitni files khul sakti hain (24 ghante mein max 2)."""
+    if state is None:
+        try:
+            state = S.load_state()
+        except Exception:
+            state = {}
+    return per_day() - len(recent_files(item, state))
 
 
 def split_names(text):
@@ -121,7 +152,11 @@ def name_parts(name):
 def api_state():
     data = load()
     recent = sorted(data["opened"].values(), key=lambda x: x.get("at", ""), reverse=True)[:15]
-    items = [dict(i, today=found_today(i), limit=per_day()) for i in data["items"]]
+    try:
+        state = S.load_state()
+    except Exception:
+        state = {}
+    items = [dict(i, today=found_today(i), used=len(recent_files(i, state)), limit=per_day()) for i in data["items"]]
     return {"enabled": data["enabled"], "items": items, "recent": recent,
             "status": STATUS, "interval": S.CFG.get("gmail_scan_seconds", 300),
             "query": S.CFG.get("gmail_query", DEFAULT_QUERY)}
@@ -254,8 +289,10 @@ async def _already_made(new, state):
     return False
 
 
-def _mark(item, data, key, name, note=None):
+def _mark(item, data, key, name, note=None, doc=None):
     rec = {"file": name, "company": item["name"], "at": now()}
+    if doc:
+        rec["doc"] = doc  # doc id -> 24 ghante ki ginti mein ek file do dafa na gine
     if note:
         rec["note"] = note
     data["opened"][key] = rec
@@ -282,7 +319,7 @@ async def _open_link(link, row, item, data, state, opened_now):
     if new and await _already_made(new, state):
         return _mark(item, data, key, new.get("title") or name, "pehle ban chuki")
     if new:
-        _mark(item, data, key, name)
+        _mark(item, data, key, new.get("title") or name, doc=link["id"])
         opened_now.append(name)
         S.log(f"Gmail: '{name}' ({item['name']}) email ke Drive link se khol di")
         S.notify("Gmail se file khuli", f"{name} — automation is ki posts banayegi", sticky=False)
@@ -337,8 +374,7 @@ async def _open_thread_files(tab, row, item, data, state, opened_now, term=None)
             save(data)
             continue
         if new:
-            data["opened"][key] = {"file": a["name"], "company": item["name"], "at": now()}
-            item.setdefault("found", []).append({"file": a["name"], "at": now()})
+            _mark(item, data, key, a["name"], doc=_doc_id(new.get("url")))
             opened_now.append(a["name"])
             S.log(f"Gmail: '{a['name']}' ({item['name']}) email se khol di — Edit with Google Docs")
             S.notify("Gmail se file khuli", f"{a['name']} — automation is ki posts banayegi", sticky=False)

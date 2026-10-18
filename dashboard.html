@@ -366,7 +366,7 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
             <div class="card-h"><svg class="icon"><use href="#i-mail"/></svg><h2>Gmail list</h2>
               <label class="switch"><input type="checkbox" id="gmailOn"><span class="track" aria-hidden="true"></span><span id="gmailOnLbl">OFF</span></label></div>
             <div class="muted" style="padding:10px 16px 0">Roz ki list do (spreadsheet se copy-paste bhi). ON ho to har 5 minute Gmail refresh ho kar har company ki alag search hoti hai —
-              pehle se aayi email bhi. File "Edit with Google Docs" se khulti hai aur posts khud banti hain. Pehle se khuli / ban chuki file dobara nahi khulti. Ek company ki din mein max 2 files (purani pehle, baqi kal).
+              pehle se aayi email bhi. File "Edit with Google Docs" se khulti hai aur posts khud banti hain. Pehle se khuli / ban chuki file dobara nahi khulti. Ek company ki 24 ghante mein max 2 files (purani pehle, baqi baad mein).
               Koi file ban rahi ho to scan us ke baad hota hai.</div>
             <form class="g-add" id="gmailForm"><label class="sr" for="gmailName">Company naam</label>
               <textarea id="gmailName" rows="2" placeholder="Company naam — poori list paste karo (spreadsheet ka column bhi)" autocomplete="off"></textarea>
@@ -812,7 +812,7 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     $("#gmailOn").checked = g.enabled; $("#gmailOnLbl").textContent = g.enabled ? "ON" : "OFF";
     $("#gmailItems").innerHTML = g.items.length ? g.items.map(it => {
       const f = (it.today || []).slice(-1)[0];
-      return `<span class="g-item ${f ? "found" : ""}" title="${f ? esc(f.file + (f.note ? " — " + f.note : "")) : "Aaj ki file abhi nahi mili"}">${esc(it.name)} <small>${f ? `aaj ${it.today.length}/${it.limit || 2} · ${esc(f.at.slice(11, 16))}` : "intezar"}</small>
+      return `<span class="g-item ${f ? "found" : ""}" title="${f ? esc(f.file + (f.note ? " — " + f.note : "")) : "Aaj ki file abhi nahi mili"}">${esc(it.name)} <small>${(it.used || f) ? `24 ghante: ${it.used ?? it.today.length}/${it.limit || 2}${f ? " · " + esc(f.at.slice(11, 16)) : ""}` : "intezar"}</small>
         <button type="button" data-grm="${esc(it.name)}" aria-label="${esc(it.name)} list se hatao">${ico("close", "icon sm")}</button></span>`; }).join("")
       : `<span class="muted">List khaali — upar company ka naam add karo</span>`;
     $$("[data-grm]").forEach(b => b.onclick = () => gmailAct({ do: "gmail_remove", name: b.dataset.grm }, b));

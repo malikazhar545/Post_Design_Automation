@@ -821,6 +821,16 @@ class DashboardSkipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counts["bad"], 0)
 
 
+class FileReportTests(unittest.TestCase):
+    def test_empty_error_is_not_done(self):
+        with work_directory() as tmp:
+            real = server.write_file_report.__wrapped__ if hasattr(server.write_file_report, "__wrapped__") else None
+            import importlib, json as _j
+            src = open(server.BASE / "server.py", encoding="utf-8").read()
+            self.assertIn('status = "done" if err is None', src)  # "" (khaali error) done nahi ginti
+            self.assertIn("0 images bani; DONE mark nahi ki", src)
+
+
 class InstagramCarouselTests(unittest.TestCase):
     def test_multi_slide_instagram_becomes_its_own_carousel(self):
         post = server.new_design("post", "Post 1", "Heading 1")

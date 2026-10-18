@@ -212,3 +212,12 @@ GMAIL LIST UPDATE (2026-10-18 raat)
 - Naam ke hisse ab kam se kam 2 LAFZ (akela "Single" / "Expert" / "International" nahi — "international seva" par ghalat
   company "Tei Enterprises & International Ministries" ki file khul gayi thi). Company ka naam hi ek lafz ho to woh chalega.
 - "Mark as unread" ab 6 second tak button ka intezar + ek dafa dobara; phir bhi na ho to popup (email ka subject ke saath).
+
+FIXES (2026-10-19 raat)
+-----------------------
+- Ek company: 24 GHANTE mein max 2 files (12 baje reset nahi). Gmail ya kisi bhi tarah khuli/bani files gini jati hain.
+- 0 images wali file kabhi DONE nahi (khaali error ko done gina ja raha tha — HR Strategy 8). Baqi files ke baad isi run mein 1 dafa dobara.
+- ChatGPT "Try again" (image bana kar glitch): dikhti images save (page fetch -> screen se canvas -> Chrome download), na dikhen
+  to "Try again" khud dabata hai (2 dafa). Image download ab 90 second mein haar maan kar agla tareeqa — 10 minute atakna nahi.
+- Ek image save na ho to poori file fail nahi: sirf woh image alag message mein.
+- Gmail scan file ke dauran bhi chalta hai (sirf Designer images/docs download ke waqt rukta hai).

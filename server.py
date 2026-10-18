@@ -87,6 +87,7 @@ class Hub:
         self.skip_raised = None    # chalti file ke liye skip ek hi dafa raise
         self.queue_view = []       # dashboard: line mein agli files
         self.watching = False      # run nayi files ke intezar mein (Gmail scan isi waqt ho sakta hai)
+        self.designer_busy = False # docs/images download (Designer ya ChatGPT) -> Gmail scan ruke
 
     def run_status(self):
         return {"type": "busy", "busy": self.running, "paused": self.paused,
@@ -2251,7 +2252,12 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                     if len(ids) > len(todo_b):
                         ids = ids[-len(todo_b):]
                     for o, fid in zip(todo_b, ids):  # ChatGPT order mein banata hai
-                        o["file"] = await download_generated(waseem, cid, fid, out_dir / names[id(o)])
+                        try:
+                            o["file"] = await download_generated(waseem, cid, fid, out_dir / names[id(o)])
+                        except Exception as e:  # ek image save na ho -> poori file fail nahi; woh alag message mein
+                            log(f"  ✘ {o['name']}: image save nahi hui ({e or type(e).__name__}) — alag message mein dobara")
+                            o.pop("file", None)
+                            continue
                         if drop_duplicate(o, outs):
                             continue  # wahi image dobara -> yeh post nahi bani, alag message mein
                         save_progress(doc_key, o["name"], o["file"])
@@ -2302,7 +2308,12 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
             if len(ids) > 1:  # ChatGPT ne 2 variants de diye -> aakhri wali (sab se nayi) lo
                 log(f"  ({output['name']}: ChatGPT ne {len(ids)} images di — aakhri wali li)")
             # har image foran save (baad mein limit lag jaye to bhi yeh mehfooz)
-            output["file"] = await download_generated(waseem, cid, ids[-1], out_dir / names[id(output)])
+            try:
+                output["file"] = await download_generated(waseem, cid, ids[-1], out_dir / names[id(output)])
+            except Exception as e:
+                summary.setdefault("image_fail", []).append(f"{who(output)}: image bani magar save nahi hui ({e or type(e).__name__})")
+                log(f"  ✘ {output['name']}: image save nahi hui — agli image")
+                continue
             if drop_duplicate(output, outs):
                 summary.setdefault("image_fail", []).append(f"{who(output)}: ChatGPT ne pichli image hi dobara di")
                 continue
@@ -2445,6 +2456,7 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
     end = run_time() + max(t["image_generation"], 4 * expected + 5) * 60  # batch: har image ~2-4 min
     reply_since = sent_at if sent_at is not None else time.time() - 5
     last_count, last_change, nudged, new_ids, limit_waits = -1, run_time(), False, [], 0
+    retry_clicks = 0  # ChatGPT ka "Try again" (image glitch) kitni dafa dabaya
     # Page par MERE AAKHRI message ke baad wali generated images dekho (ginti nahi — lambi chat mein ChatGPT
     # purane turns page se hata deta hai). Jo image ek dafa dikhi, yaad rehti hai (nudge ke baad bhi).
     seen = []
@@ -2513,6 +2525,29 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
         busy = await waseem.generating()
         if len(new_ids) >= expected and not busy:
             break
+        # ChatGPT kabhi image bana kar neeche "Try again" de deta hai (server glitch) — 18 minute intezar nahi:
+        # image dikh rahi ho to woh le lo; na dikhe to "Try again" dabao (2 dafa tak)
+        if not busy:
+            try:
+                tr = await HUB.exec(waseem.role, waseem.tab, "turn_retry", False, timeout=30) or {}
+            except Exception:
+                tr = {}
+            if tr.get("found"):
+                if new_ids:
+                    log(f"  ChatGPT ne 'Try again' dikhaya — jo {len(new_ids)} image(s) ban kar dikh rahi hain woh save kar raha hoon")
+                    break
+                if retry_clicks < 2:
+                    retry_clicks += 1
+                    log(f"  ChatGPT par 'Try again' — khud click kar raha hoon ({retry_clicks}/2)")
+                    try:
+                        await HUB.exec(waseem.role, waseem.tab, "turn_retry", True, timeout=30)
+                    except Exception as e:
+                        log(f"  (Try again click nahi hua: {e})")
+                    last_change = run_time()
+                    end = max(end, run_time() + t["image_generation"] * 60)
+                    continue
+                log("  'Try again' 2 dafa dabaya, image phir bhi nahi — aage (yeh image alag message mein)")
+                break
         if not busy and run_time() - last_change > t["idle_after_images"] * 60 and len(new_ids) < expected:
             # ChatGPT ki image limit lagi? -> ruko, phir dobara bolo
             try:  # sirf jab image nahi aa rahi: page ka text dekho (limit ka message?) — API nahi
@@ -2576,24 +2611,59 @@ async def page_image_refs(waseem, cid=None):
 
 
 async def download_generated(waseem, cid, fid, dest_noext):
-    if fid.startswith(("http", "/", "blob:")):  # page ki image ka link -> seedha page se (API nahi)
-        r = await HUB.exec("waseem", waseem.tab, "fetch_b64", fid)
-        if r and r["status"] == 200 and len(r["b64"]) > 8000:
-            path = Path(str(dest_noext) + (_ext_for(r["contentType"], fid) or ".png"))
-            path.write_bytes(base64.b64decode(r["b64"]))
-            return path
+    """ChatGPT ki bani image save. Kai tareeqe (ek atke to doosra) — har ek ki choti time-limit:
+    1) page se seedha (fetch)  2) API ka download link  3) screen par dikhti image (canvas — 'right click save' jaisa)
+    4) Chrome download. (HR Strategy 8: image dikhi magar fetch 10 minute atka raha -> ab 90 second.)"""
+    # ChatGPT image save ho rahi ho to Gmail scan wait kare (CPU / focus / tab pe asar na pade)
+    HUB.designer_busy = True
+    errors = []
+
+    def save_b64(b64, ctype, url):
+        path = Path(str(dest_noext) + (_ext_for(ctype, url) or ".png"))
+        path.write_bytes(base64.b64decode(b64))
+        return path
+    try:
+        page_src = fid if fid.startswith(("http", "/", "blob:")) else None
+        if page_src:  # 1) page ki image ka link -> seedha page se (API nahi)
+            try:
+                r = await HUB.exec("waseem", waseem.tab, "fetch_b64", page_src, timeout=90)
+                if r and r["status"] == 200 and len(r["b64"]) > 8000:
+                    return save_b64(r["b64"], r["contentType"], page_src)
+                errors.append(f"fetch {r and r['status']}")
+            except Exception as e:
+                errors.append(f"fetch: {e or type(e).__name__}")
         m = re.search(r"(file[_-][A-Za-z0-9]+)", fid)
-        if not m:
-            raise RuntimeError(f"generated image download nahi hui ({r and r['status']})")
-        fid = m.group(1)
-    info = await waseem.api(f"/backend-api/files/download/{fid}?conversation_id={cid}&inline=false")
-    url = info["download_url"]
-    r = await HUB.exec("waseem", waseem.tab, "fetch_b64", url)
-    if r["status"] != 200:
-        r = await HUB.call("waseem", "fetch", url=url if not url.startswith("/") else CHATGPT + url)
-    path = Path(str(dest_noext) + (_ext_for(r["contentType"], url) or ".png"))
-    path.write_bytes(base64.b64decode(r["b64"]))
-    return path
+        if m:  # 2) API ka download link
+            try:
+                info = await waseem.api(f"/backend-api/files/download/{m.group(1)}?conversation_id={cid}&inline=false")
+                url = info["download_url"]
+                r = await HUB.exec("waseem", waseem.tab, "fetch_b64", url, timeout=90)
+                if r["status"] != 200:
+                    r = await HUB.call("waseem", "fetch", url=url if not url.startswith("/") else CHATGPT + url, timeout=90)
+                if r["status"] == 200 and len(r["b64"]) > 8000:
+                    return save_b64(r["b64"], r["contentType"], url)
+                errors.append(f"api {r['status']}")
+            except Exception as e:
+                errors.append(f"api: {e or type(e).__name__}")
+        if page_src:  # 3) screen par dikhti image -> canvas (right click save jaisa)
+            try:
+                r = await HUB.exec("waseem", waseem.tab, "img_canvas_b64", page_src, timeout=60) or {}
+                if r.get("b64") and len(r["b64"]) > 8000:
+                    log("    (image screen se uthayi — download link atka hua tha)")
+                    return save_b64(r["b64"], "image/png", ".png")
+                errors.append(f"canvas: {r.get('error')}")
+            except Exception as e:
+                errors.append(f"canvas: {e or type(e).__name__}")
+            if page_src.startswith("http"):  # 4) Chrome download ("Save image as")
+                try:
+                    src = await HUB.call("waseem", "download_url", url=page_src, timeout=120)
+                    log("    (image Chrome download se save ki)")
+                    return _from_download(src, dest_noext)
+                except Exception as e:
+                    errors.append(f"chrome download: {e or type(e).__name__}")
+        raise RuntimeError("generated image save nahi hui — " + "; ".join(errors))
+    finally:
+        HUB.designer_busy = False
 
 
 RATIOS = {"post": (4, 5), "story": (9, 16), "mockup_placed": (4, 5), "mockup_use": (4, 5)}
@@ -2736,7 +2806,13 @@ def split_instagram_carousels(designs):
 
 
 async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared_doc=None):
-    doc = prepared_doc if prepared_doc is not None else await prepare_file(tab_id, doc_id, out_dir)
+    # Designer busy = Gmail scan ruke (tab aage aa kar download/screenshot bigaar sakti hai).
+    # ChatGPT (Waseem) wait / generate ke dauran Designer free -> Gmail nayi files line mein khol sakta hai.
+    HUB.designer_busy = True
+    try:
+        doc = prepared_doc if prepared_doc is not None else await prepare_file(tab_id, doc_id, out_dir)
+    finally:
+        HUB.designer_busy = False
     out_dir.mkdir(parents=True, exist_ok=True)
     designs, reels, done_posts = parse_doc(doc)
     if not designs and not reels and not done_posts:
@@ -2789,6 +2865,7 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
     summary["designs"] = len(designs)
 
     # Resolve branding before downloading source assets; missing website -> skip promptly.
+    # Waseem (ChatGPT) — Designer free, Gmail scan chal sakta hai.
     doc_text = "\n".join(l for l, _ in doc)
     waseem = Chat("waseem")
     cid, website_brand = await resolve_company_chat(waseem, company, terms, doc_text, out_dir)
@@ -2797,85 +2874,89 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
         for d in designs:
             d["website_brand"] = website_brand
 
-    ig_cache = {}  # instagram url -> screenshots (carousel slides ek hi post share karti hain)
-    img_dir = out_dir / "source_images"
-    img_dir.mkdir(parents=True, exist_ok=True)
-    for n, d in enumerate(designs, 1):
-        if d["image_url"]:
-            try:
-                d["image_path"] = await download_image(d["image_url"], img_dir / f"image{n}")
-                log(f"  Image {n} download: {d['image_path'].name}")
-            except Exception as e:
-                # file mein image di hai to wahi zaroori -> bina image ke post nahi banegi
-                log(f"  Image {n} download FAIL ({e}) — yeh post skip (image zaroori hai)")
-                summary.setdefault("image_fail", []).append(f"{d['label']}: {d['content'][:50]} -> {d['image_url']}")
-                d["skip"] = True
-        if d.get("after_url") and not d.get("skip"):  # comparison: AFTER photo bhi zaroori
-            try:
-                d["after_path"] = await download_image(d["after_url"], img_dir / f"image{n}_after")
-                log(f"  Image {n} (after) download: {d['after_path'].name}")
-            except Exception as e:
-                log(f"  Image {n} (after) download FAIL ({e}) — yeh post skip (dono images zaroori)")
-                summary.setdefault("image_fail", []).append(f"{d['label']}: AFTER image -> {d['after_url']}")
-                d["skip"] = True
-        if not d.get("product_url") and not d["image_url"] and d.get("maybe_products"):
-            for u in d["maybe_products"]:
-                if await is_product_page(u):
-                    d["product_url"] = u
-                    log(f"  Design {n}: product page mila -> {u}")
-                    break
-        if d.get("product_url"):
-            try:
-                d["product_path"] = await download_image(d["product_url"], img_dir / f"product{n}")
-                mock = is_mockup_company(company)
-                log(f"  Product {n} ki image download: {d['product_path'].name}"
-                    + (" (2 mockups banenge)" if mock else " (sirf 1 design, mockups nahi)"))
-            except Exception as e:
-                log(f"  Product {n} image download fail ({e}) — is product ki post pending")
-                d["skip"] = True
-                summary.setdefault("image_fail", []).append(f"{d['label']}: product photo download nahi hui")
-        for u in d.get("ref_links") or []:  # Molen: brief ka link parh kar idea
-            try:
-                d["ref_text"] = await fetch_reference_text(u)
-                if d["ref_text"]:
-                    log(f"  Design {n}: reference page parh liya ({len(d['ref_text'])} chars)")
-                    break
-            except Exception as e:
-                log(f"  Design {n}: reference link nahi khula ({e})")
-        if d["ig_url"]:
-            try:
-                if d["ig_url"] not in ig_cache:  # carousel ki saari slides ek hi Instagram post -> ek dafa
-                    ig_cache[d["ig_url"]] = await screenshot_instagram(d["ig_url"], img_dir / f"instagram{n}.png")
-                    log(f"  Instagram {n}: {len(ig_cache[d['ig_url']])} slide screenshot")
-                shots = ig_cache[d["ig_url"]]
-                if d.get("ig_slide"):  # carousel slide k -> Instagram ki slide k
-                    k = d["ig_slide"]
-                    d["ig_shot"] = [shots[k - 1]] if k <= len(shots) else []
-                    if not d["ig_shot"]:
-                        d["text_from_image"] = True  # Instagram mein itni slides nahi -> image ka text
-                else:
-                    d["ig_shot"] = shots
-            except Exception as e:
-                log(f"  Instagram {n} screenshot fail ({e})")
-                if not d["content"] and not d.get("image_url"):
+    HUB.designer_busy = True  # Freepik / Drive / screenshots — Gmail tab aage na aaye
+    try:
+        ig_cache = {}  # instagram url -> screenshots (carousel slides ek hi post share karti hain)
+        img_dir = out_dir / "source_images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        for n, d in enumerate(designs, 1):
+            if d["image_url"]:
+                try:
+                    d["image_path"] = await download_image(d["image_url"], img_dir / f"image{n}")
+                    log(f"  Image {n} download: {d['image_path'].name}")
+                except Exception as e:
+                    # file mein image di hai to wahi zaroori -> bina image ke post nahi banegi
+                    log(f"  Image {n} download FAIL ({e}) — yeh post skip (image zaroori hai)")
+                    summary.setdefault("image_fail", []).append(f"{d['label']}: {d['content'][:50]} -> {d['image_url']}")
                     d["skip"] = True
-                    summary.setdefault("image_fail", []).append(f"{d['label']}: Instagram screenshot nahi bana, text bhi nahi")
-                elif not d["content"]:
-                    d["text_from_image"] = True
+            if d.get("after_url") and not d.get("skip"):  # comparison: AFTER photo bhi zaroori
+                try:
+                    d["after_path"] = await download_image(d["after_url"], img_dir / f"image{n}_after")
+                    log(f"  Image {n} (after) download: {d['after_path'].name}")
+                except Exception as e:
+                    log(f"  Image {n} (after) download FAIL ({e}) — yeh post skip (dono images zaroori)")
+                    summary.setdefault("image_fail", []).append(f"{d['label']}: AFTER image -> {d['after_url']}")
+                    d["skip"] = True
+            if not d.get("product_url") and not d["image_url"] and d.get("maybe_products"):
+                for u in d["maybe_products"]:
+                    if await is_product_page(u):
+                        d["product_url"] = u
+                        log(f"  Design {n}: product page mila -> {u}")
+                        break
+            if d.get("product_url"):
+                try:
+                    d["product_path"] = await download_image(d["product_url"], img_dir / f"product{n}")
+                    mock = is_mockup_company(company)
+                    log(f"  Product {n} ki image download: {d['product_path'].name}"
+                        + (" (2 mockups banenge)" if mock else " (sirf 1 design, mockups nahi)"))
+                except Exception as e:
+                    log(f"  Product {n} image download fail ({e}) — is product ki post pending")
+                    d["skip"] = True
+                    summary.setdefault("image_fail", []).append(f"{d['label']}: product photo download nahi hui")
+            for u in d.get("ref_links") or []:  # Molen: brief ka link parh kar idea
+                try:
+                    d["ref_text"] = await fetch_reference_text(u)
+                    if d["ref_text"]:
+                        log(f"  Design {n}: reference page parh liya ({len(d['ref_text'])} chars)")
+                        break
+                except Exception as e:
+                    log(f"  Design {n}: reference link nahi khula ({e})")
+            if d["ig_url"]:
+                try:
+                    if d["ig_url"] not in ig_cache:  # carousel ki saari slides ek hi Instagram post -> ek dafa
+                        ig_cache[d["ig_url"]] = await screenshot_instagram(d["ig_url"], img_dir / f"instagram{n}.png")
+                        log(f"  Instagram {n}: {len(ig_cache[d['ig_url']])} slide screenshot")
+                    shots = ig_cache[d["ig_url"]]
+                    if d.get("ig_slide"):  # carousel slide k -> Instagram ki slide k
+                        k = d["ig_slide"]
+                        d["ig_shot"] = [shots[k - 1]] if k <= len(shots) else []
+                        if not d["ig_shot"]:
+                            d["text_from_image"] = True  # Instagram mein itni slides nahi -> image ka text
+                    else:
+                        d["ig_shot"] = shots
+                except Exception as e:
+                    log(f"  Instagram {n} screenshot fail ({e})")
+                    if not d["content"] and not d.get("image_url"):
+                        d["skip"] = True
+                        summary.setdefault("image_fail", []).append(f"{d['label']}: Instagram screenshot nahi bana, text bhi nahi")
+                    elif not d["content"]:
+                        d["text_from_image"] = True
 
-    designs = split_instagram_carousels(designs)
-    # before/after carousel: ek slide ki photo na mile to doosri akeli nahi banti (dono images zaroori)
-    ba_skip = {d.get("carousel") for d in designs if d.get("skip") and d.get("before_after")}
-    for d in designs:
-        if d.get("before_after") and d.get("carousel") in ba_skip and not d.get("skip"):
-            d["skip"] = True
-            summary.setdefault("image_fail", []).append(f"{d['label']}: before/after ki doosri image nahi mili — dono zaroori")
-    designs = [d for d in designs if not d.get("skip")]
-    if not is_mockup_company(company):
-        for d in designs:  # mockups sirf chuni hui companies (Wear Wood); baqi: product photo heading wali post mein
-            d["no_mockups"] = True
-    if not designs:
-        raise RuntimeError("Saari posts ki images download fail — kuch nahi bheja")
+        designs = split_instagram_carousels(designs)
+        # before/after carousel: ek slide ki photo na mile to doosri akeli nahi banti (dono images zaroori)
+        ba_skip = {d.get("carousel") for d in designs if d.get("skip") and d.get("before_after")}
+        for d in designs:
+            if d.get("before_after") and d.get("carousel") in ba_skip and not d.get("skip"):
+                d["skip"] = True
+                summary.setdefault("image_fail", []).append(f"{d['label']}: before/after ki doosri image nahi mili — dono zaroori")
+        designs = [d for d in designs if not d.get("skip")]
+        if not is_mockup_company(company):
+            for d in designs:  # mockups sirf chuni hui companies (Wear Wood); baqi: product photo heading wali post mein
+                d["no_mockups"] = True
+        if not designs:
+            raise RuntimeError("Saari posts ki images download fail — kuch nahi bheja")
+    finally:
+        HUB.designer_busy = False  # generate wait mein Gmail OK; download_generated khud busy set karega
     await waseem.goto(f"{CHATGPT}/c/{cid}")
     await generate_and_download(waseem, cid, company, designs, out_dir, summary)
 
@@ -2917,7 +2998,8 @@ def folder_of(title):
 def write_file_report(out_dir, summary):
     """Dashboard ke liye har file ka aakhri hal: done / incomplete / error / skipped + masle (post number + heading)."""
     err = summary.get("error")
-    status = "done" if not err else ("incomplete" if str(err).startswith("File incomplete") else "error")
+    # khaali error ("") bhi error hai — pehle isay "done" gin liya jata tha (HR Strategy 8: 0 images, phir bhi done)
+    status = "done" if err is None else ("incomplete" if str(err).startswith("File incomplete") else "error")
     if summary.get("skipped"):
         status = "skipped"
     data = {k: summary.get(k) for k in ("file", "designs", "made", "error", "image_fail", "qa_fail", "dropped",
@@ -3168,10 +3250,15 @@ async def run_all(only=None, only_post=None):
         def doc_id_of(tab):
             return re.search(r"/document/d/([^/]+)", tab["url"]).group(1)
 
-        for tab in tabs:
-            await prep(tab)
+        HUB.designer_busy = True  # saari files ki working copies (Designer docs parhta hai)
+        try:
+            for tab in tabs:
+                await prep(tab)
+        finally:
+            HUB.designer_busy = False
         queue, seen, i = list(tabs), {doc_id_of(t) for t in tabs}, 0
         net_retries = {}
+        retry_later = set()  # 0 images wali files: baqi sab ke baad ek dafa dobara
         watch_until, reported = None, 0
         while True:
             if not queue and not only:
@@ -3200,7 +3287,11 @@ async def run_all(only=None, only_post=None):
                         seen.add(did)
                         log(f"Nayi file mili: {t['title']} — line mein laga di")
                         add_marker_doc(t)
-                        await prep(t)
+                        HUB.designer_busy = True
+                        try:
+                            await prep(t)
+                        finally:
+                            HUB.designer_busy = False
                         queue.append(t)
                 except Exception as e:
                     log(f"  (nayi files check nahi ho saki: {e})")
@@ -3251,6 +3342,8 @@ async def run_all(only=None, only_post=None):
                     log(f"  Story skip (aap khud banaoge): {'; '.join(summary['story_skipped'])}")
                 if summary.get("qa_fail") or summary.get("image_fail") or summary.get("dropped"):
                     raise RuntimeError("File incomplete — failed/missing images summary mein hain; DONE mark nahi ki")
+                if summary.get("designs") and not summary.get("made"):  # 0 images bani -> DONE kabhi nahi
+                    raise RuntimeError("File incomplete — 0 images bani; DONE mark nahi ki")
                 if not only_post:  # sirf ek post ka test -> file ko "done" mat karo
                     clear_progress(doc_id)  # file poori -> adhoori images ka record khatam
                     state[doc_id] = {"status": "done", "title": title, "at": datetime.now().isoformat(),
@@ -3272,16 +3365,25 @@ async def run_all(only=None, only_post=None):
                     continue
                 if isinstance(e, WebsiteBrandingUnavailable):
                     summary["manual_reason"] = str(e)
-                log(f"  ERROR: {e}")
+                err_text = str(e) or f"{type(e).__name__} (timeout / koi jawab nahi)"
+                log(f"  ERROR: {err_text}")
                 traceback.print_exc()
-                notify(f"ERROR: {folder}", str(e)[:300] + " — script agli file par ja rahi hai")
-                summary["error"] = str(e)
+                notify(f"ERROR: {folder}", err_text[:300] + " — script agli file par ja rahi hai")
+                summary["error"] = err_text
                 if not only_post:
-                    state[doc_id] = {"status": "error", "title": title, "error": str(e)}
+                    state[doc_id] = {"status": "error", "title": title, "error": err_text}
+                # koi image nahi bani -> baqi SAARI companies ke baad isi run mein EK dafa dobara
+                # (ban chuki images yaad hain — sirf baqi banengi)
+                if not summary.get("made") and doc_id not in retry_later and not only_post                         and not isinstance(e, (WebsiteBrandingUnavailable, ChatLimit)):
+                    retry_later.add(doc_id)
+                    queue.append(tab)
+                    report.remove(summary)
+                    log(f"  '{folder}' ki koi image nahi bani — baqi files ke baad dobara banegi")
             # records (source images, prompts, QA) sirf Output\<date>\<file>\ mein — Downloads mein nahi
             save_state(state)
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
             HUB.current = {}
+            HUB.designer_busy = False
             try:
                 await HUB.call("designer", "focus_tab", tabId=tab["tabId"])
             except Exception:
@@ -3299,6 +3401,7 @@ async def run_all(only=None, only_post=None):
         HUB.current = {}
         HUB.queue_view = []
         HUB.watching = False
+        HUB.designer_busy = False
         if not only and not only_post:
             clear_run_marker()  # kaam poora / normal band -> agli dafa khud start nahi
         HUB.running = False
