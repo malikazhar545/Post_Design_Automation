@@ -36,8 +36,8 @@ class FakeHub:
         self.calls.append(fn)
         if fn == "gmail_state":  # Gmail search: sirf woh email jis mein company ka naam ho
             from urllib.parse import unquote
-            rows = [{"i": 0, "id": "t1", "text": "Client Wear Wood posts Wear Wood 9.docx"},
-                    {"i": 1, "id": "t2", "text": "Invoice from someone else"}]
+            rows = [{"i": 0, "id": "t1", "text": "Client Wear Wood posts Wear Wood 9.docx", "unread": True},
+                    {"i": 1, "id": "t2", "text": "Invoice from someone else", "unread": True}]
             name = (unquote(self.url).split('"') + ["", ""])[1].lower()
             found = [r for r in rows if name and name in r["text"].lower()]
             return {"ready": True, "hash": "#" + self.url.split("#", 1)[-1], "rows": found, "empty": not found}
@@ -111,9 +111,17 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("docs.google.com/document/d/1WQm21Kj9r2J_qv_OgBEHwo7s8LsLuGgsVYEbcCZs86U/edit" in d["url"] for d in self.hub.docs))
         self.assertEqual(self.started, [True])
 
-    async def test_old_done_file_not_reopened_and_company_keeps_waiting(self):
+    async def test_same_name_done_last_month_is_a_new_file(self):
         gmail_watch.setup(SimpleNamespace(**{**vars(gmail_watch.S), "load_state": lambda: {
-            "d": {"status": "done", "title": "Wear Wood 9.docx - Google Docs"}}}))
+            "d": {"status": "done", "title": "Wear Wood 9.docx - Google Docs", "at": "2020-01-05T10:00:00"}}}))
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertEqual(self.hub.calls.count("gmail_edit"), 1)   # pichle mahine ka "Wear Wood 9" -> yeh nayi file
+
+    async def test_old_done_file_not_reopened_and_company_keeps_waiting(self):
+        from datetime import datetime
+        gmail_watch.setup(SimpleNamespace(**{**vars(gmail_watch.S), "load_state": lambda: {
+            "d": {"status": "done", "title": "Wear Wood 9.docx - Google Docs", "at": datetime.now().isoformat()}}}))
         gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
         await gmail_watch.scan(force=True)
         self.assertEqual(self.hub.calls.count("gmail_edit"), 0)
@@ -135,7 +143,8 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("t1|Wear Wood 9.docx", gmail_watch.load()["opened"])
 
     async def test_two_available_files_older_one_opens_first_and_search_is_5_days(self):
-        rows = [{"i": 0, "id": "new", "text": "Wear Wood 11 18 Oct"}, {"i": 1, "id": "old", "text": "Wear Wood 10 16 Oct"}]
+        rows = [{"i": 0, "id": "new", "text": "Wear Wood 11 18 Oct", "unread": True},
+                {"i": 1, "id": "old", "text": "Wear Wood 10 16 Oct", "unread": True}]
         order = []
         orig = self.hub.exec
 
@@ -169,8 +178,9 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("note", gmail_watch.load()["opened"]["t1|Wear Wood 9.docx"])
 
     async def test_three_available_files_only_two_oldest_open_today(self):
-        rows = [{"i": 0, "id": "c", "text": "Wear Wood 12 18 Oct"}, {"i": 1, "id": "b", "text": "Wear Wood 11 17 Oct"},
-                {"i": 2, "id": "a", "text": "Wear Wood 10 16 Oct"}]
+        rows = [{"i": 0, "id": "c", "text": "Wear Wood 12 18 Oct", "unread": True},
+                {"i": 1, "id": "b", "text": "Wear Wood 11 17 Oct", "unread": True},
+                {"i": 2, "id": "a", "text": "Wear Wood 10 16 Oct", "unread": True}]
         order, n = [], {"k": 0}
         orig = self.hub.exec
 
@@ -193,6 +203,50 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(gmail_watch.found_today(gmail_watch.load()["items"][0])), 2)
         await gmail_watch.scan(force=True)                       # aaj dobara scan: had puri -> kuch nahi
         self.assertEqual(order, ["a", "b"])
+
+    async def test_read_emails_are_never_opened(self):
+        rows = [{"i": 0, "id": "r1", "text": "Wear Wood 9 16 Oct", "unread": False}]
+        orig = self.hub.exec
+
+        async def exec_(role, tab, fn, *args, timeout=600):
+            if fn == "gmail_state":
+                return {"ready": True, "rows": rows, "hash": "#" + self.hub.url.split("#", 1)[-1]}
+            return await orig(role, tab, fn, *args, timeout=timeout)
+        self.hub.exec = exec_
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertNotIn("gmail_open_row", self.hub.calls)   # read = aap dekh chuke -> haath nahi lagana
+
+    async def test_continue_editing_dialog_clicks_edit_latest(self):
+        orig = self.hub.exec
+        state = {"dialog": False}
+
+        async def exec_(role, tab, fn, *args, timeout=600):
+            if fn == "gmail_edit":  # Gmail: "Continue editing?" -> tab abhi nahi khulti
+                state["dialog"] = True
+                return "ok"
+            if fn == "gmail_continue_dialog":
+                if state["dialog"]:
+                    state["dialog"] = False
+                    self.hub.docs.append({"url": "https://docs.google.com/document/d/latest/edit", "title": "Wear Wood 9.docx - Google Docs"})
+                    return True
+                return False
+            return await orig(role, tab, fn, *args, timeout=timeout)
+        self.hub.exec = exec_
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertIn("t1|Wear Wood 9.docx", gmail_watch.load()["opened"])
+        self.assertNotIn("note", gmail_watch.load()["opened"]["t1|Wear Wood 9.docx"])
+
+    async def test_link_to_already_made_doc_by_id_not_opened(self):
+        self.hub.links = [{"id": "1p-CnuOF3ahd308lq8g4_ADm_2ieKnForK-23yBKsc9o", "name": "1p-CnuOF3ahd308lq8g4_ADm_2ieKnForK-23yBKsc9o", "url": "u"}]
+        gmail_watch.setup(SimpleNamespace(**{**vars(gmail_watch.S), "load_state": lambda: {
+            "1p-CnuOF3ahd308lq8g4_ADm_2ieKnForK-23yBKsc9o": {"status": "done", "title": "Wear Wood 8 - Google Docs"}}}))
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertNotIn("open_tab", self.hub.calls)        # ban chuki file (doc id se) dobara nahi khuli
+        rec = gmail_watch.load()["opened"]["t1|1p-CnuOF3ahd308lq8g4_ADm_2ieKnForK-23yBKsc9o"]
+        self.assertEqual(rec["note"], "pehle ban chuki")
 
     def test_spreadsheet_paste_adds_every_name(self):
         gmail_watch.api_action("gmail_add", {"name": "1. Wear Wood\tBelle Clinic\r\n2) Linked up\n\nWear Wood\n• Molen tax"})

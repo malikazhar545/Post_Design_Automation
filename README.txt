@@ -206,3 +206,6 @@ GMAIL LIST UPDATE (2026-10-18 raat)
   Switch ON karte hi pehla scan foran.
 - Ek company ki din mein ZYADA SE ZYADA 2 files (config gmail_max_per_day). 5 din mein 3 pari hon -> sab se purani 2 aaj, teesri kal.
   Dashboard: "aaj 1/2" = aaj ek khuli, ek aur khul sakti hai.
+- Gmail: SIRF UNREAD emails kholi jati hain (read = aap dekh chuke). "Continue editing?" dialog -> "Edit latest" khud dabata hai.
+- "Pehle ban chuki": naam se sirf ISI MAHINE ka record (agle mahine wahi number nayi file). Doc id se hamesha.
+  Khulne ke baad pata chale file ban chuki thi -> tab khud band.

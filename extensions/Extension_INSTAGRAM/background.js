@@ -794,6 +794,16 @@ const PAGE = {
     await sleep(800);
     return row.classList.contains('zE') ? 'ok' : 'click hua, unread confirm nahi';
   },
+  gmail_continue_dialog: function () {
+    // "Continue editing? A copy of this attachment was previously added to Drive" -> "Edit latest"
+    const vis = e => !!(e && e.offsetParent);
+    const btn = [...document.querySelectorAll('button, [role="button"]')].filter(vis)
+      .find(b => /^\s*edit latest\s*$/i.test(b.innerText || b.textContent || ''));
+    if (!btn) return false;
+    for (const t of ['mouseover', 'mousedown', 'mouseup', 'click'])
+      btn.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+    return true;
+  },
   gmail_doc_links: function () {
     // khuli email ke andar Drive / Docs file links (gmail_drive_chip ya aam link) -> file id
     const vis = e => !!(e && e.offsetParent);

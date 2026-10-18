@@ -206,21 +206,49 @@ def _done_or_open(stem, state, open_titles):
     key = S.norm(stem)
     if key in {S.norm(S.folder_of(t)) for t in open_titles}:
         return "pehle se khuli hai"
-    if key in {S.norm(S.folder_of(v.get("title", ""))) for v in state.values() if v.get("status") == "done"}:
-        return "pehle ban chuki"
+    # naam se "ban chuki" sirf ISI MAHINE ki (agle mahine wahi number — Wear Wood 8 — nayi file hoti hai).
+    # Doc id wala check (link / khuli tab) har waqt — same doc = same file.
+    month = datetime.now().strftime("%Y-%m")
+    done = {S.norm(S.folder_of(v.get("title", ""))) for v in state.values()
+            if v.get("status") == "done" and str(v.get("at", "")).startswith(month)}
+    if key in done:
+        return "is mahine pehle ban chuki"
     return None
 
 
-async def _wait_new_doc(before):
+def _doc_id(url):
+    m = re.search(r"/document/d/([\w-]+)", url or "")
+    return m.group(1) if m else None
+
+
+async def _wait_new_doc(before, gmail_tab=None):
     urls = {t["url"].split("#")[0].split("?")[0] for t in before}
     for _ in range(30):  # Docs ki nayi tab ka intezar (45 second — jaldi email band nahi karni)
         await asyncio.sleep(1.5)
+        if gmail_tab is not None:  # "Continue editing? ... previously added to Drive" -> "Edit latest"
+            try:
+                if await S.HUB.exec("designer", gmail_tab, "gmail_continue_dialog", timeout=20):
+                    S.log("  Gmail: 'Continue editing?' -> Edit latest")
+            except Exception:
+                pass
         tabs = await S.HUB.call("designer", "list_doc_tabs", timeout=20)
         new = next((t for t in tabs if t["url"].split("#")[0].split("?")[0] not in urls), None)
         # tab tab hi "khuli" jab URL mein doc id aa jaye aur title load ho (adhoori tab se run crash hota tha)
         if new and re.search(r"/document/d/[\w-]+", new["url"]) and new.get("title") and new["title"] != "Google Docs":
             return new
     return None
+
+
+async def _already_made(new, state):
+    """Nayi khuli tab ki file pehle ban chuki (state mein DONE)? -> tab band kar do."""
+    did = _doc_id(new.get("url"))
+    if did and state.get(did, {}).get("status") == "done":
+        try:
+            await S.HUB.call("designer", "close_tab", tabId=new["tabId"], timeout=20)
+        except Exception:
+            pass
+        return True
+    return False
 
 
 def _mark(item, data, key, name, note=None):
@@ -242,10 +270,14 @@ async def _open_link(link, row, item, data, state, opened_now):
     if any(link["id"] in t["url"] for t in before):
         return _mark(item, data, key, name, "pehle se khuli hai")
     why = _done_or_open(name, state, [t["title"] for t in before])
+    if not why and state.get(link["id"], {}).get("status") == "done":  # link ka naam na ho -> doc id se
+        why = "pehle ban chuki"
     if why:
         return _mark(item, data, key, name, why)
     await S.HUB.call("designer", "open_tab", url=f"https://docs.google.com/document/d/{link['id']}/edit", timeout=60)
     new = await _wait_new_doc(before)
+    if new and await _already_made(new, state):
+        return _mark(item, data, key, new.get("title") or name, "pehle ban chuki")
     if new:
         _mark(item, data, key, name)
         opened_now.append(name)
@@ -296,7 +328,11 @@ async def _open_thread_files(tab, row, item, data, state, opened_now, term=None)
             if res == "ok":
                 break
             await asyncio.sleep(1.5)
-        new = await _wait_new_doc(before) if res == "ok" else None
+        new = await _wait_new_doc(before, tab) if res == "ok" else None
+        if new and await _already_made(new, state):
+            _mark(item, data, key, a["name"], "pehle ban chuki")
+            save(data)
+            continue
         if new:
             data["opened"][key] = {"file": a["name"], "company": item["name"], "at": now()}
             item.setdefault("found", []).append({"file": a["name"], "at": now()})
@@ -363,6 +399,8 @@ async def scan(force=False):
                     if term != item["name"]:
                         S.log(f"Gmail: '{item['name']}' poora naam nahi mila — '{term}' se email mili")
                     break
+            # sirf UNREAD emails — read wali aap dekh chuke (purani bani files dobara na banen)
+            rows = [r for r in rows if r.get("unread")]
             rows = list(reversed(rows[:10]))  # kai files hon to PURANI pehle (Gmail list mein neeche wali), phir nayi
             for row in rows:
                 if blocked() or left_today(item) <= 0:  # purani pehle; aaj 2 ho gayin to baqi kal
