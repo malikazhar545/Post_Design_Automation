@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Post Automation - __NAME__",
-  "version": "3.7",
+  "version": "3.8",
   "description": "Post design automation helper (__NAME__ profile)",
   "permissions": ["tabs", "scripting", "storage", "downloads", "alarms", "notifications", "tabGroups", "contentSettings"],
   "icons": { "128": "icon.png" },

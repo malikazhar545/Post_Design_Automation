@@ -209,3 +209,6 @@ GMAIL LIST UPDATE (2026-10-18 raat)
 - Gmail: SIRF UNREAD emails kholi jati hain (read = aap dekh chuke). "Continue editing?" dialog -> "Edit latest" khud dabata hai.
 - "Pehle ban chuki": naam se sirf ISI MAHINE ka record (agle mahine wahi number nayi file). Doc id se hamesha.
   Khulne ke baad pata chale file ban chuki thi -> tab khud band.
+- Naam ke hisse ab kam se kam 2 LAFZ (akela "Single" / "Expert" / "International" nahi — "international seva" par ghalat
+  company "Tei Enterprises & International Ministries" ki file khul gayi thi). Company ka naam hi ek lafz ho to woh chalega.
+- "Mark as unread" ab 6 second tak button ka intezar + ek dafa dobara; phir bhi na ho to popup (email ka subject ke saath).

@@ -766,8 +766,11 @@ const PAGE = {
     const box = row.querySelector('[role="checkbox"]');
     if (!box) return 'checkbox nahi mila';
     if (box.getAttribute('aria-checked') !== 'true') fire(box);
-    await sleep(600);
-    const btn = [...document.querySelectorAll('[aria-label="Mark as read"], [data-tooltip="Mark as read"]')].find(vis);
+    let btn = null;
+    for (let k = 0; k < 20 && !btn; k++) {
+      await sleep(300);
+      btn = [...document.querySelectorAll('[aria-label="Mark as read"], [data-tooltip="Mark as read"]')].find(vis);
+    }
     if (!btn) { fire(box); return 'Mark as read button nahi mila'; }
     fire(btn);
     await sleep(800);
@@ -787,8 +790,11 @@ const PAGE = {
     const box = row.querySelector('[role="checkbox"]');
     if (!box) return 'checkbox nahi mila';
     if (box.getAttribute('aria-checked') !== 'true') fire(box);
-    await sleep(600);
-    const btn = [...document.querySelectorAll('[aria-label="Mark as unread"], [data-tooltip="Mark as unread"]')].find(vis);
+    let btn = null;
+    for (let k = 0; k < 20 && !btn; k++) {  // toolbar button kabhi der se aata hai -> 6 second tak
+      await sleep(300);
+      btn = [...document.querySelectorAll('[aria-label="Mark as unread"], [data-tooltip="Mark as unread"]')].find(vis);
+    }
     if (!btn) { fire(box); return 'Mark as unread button nahi mila'; }
     fire(btn);
     await sleep(800);

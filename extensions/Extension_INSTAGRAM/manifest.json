@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Post Automation - INSTAGRAM",
-  "version": "3.7",
+  "version": "3.8",
   "description": "Post design automation helper (INSTAGRAM profile)",
   "permissions": ["tabs", "scripting", "storage", "downloads", "alarms", "notifications", "tabGroups", "contentSettings"],
   "icons": { "128": "icon.png" },

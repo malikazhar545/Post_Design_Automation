@@ -108,7 +108,10 @@ def name_parts(name):
     for t in out:
         n = S.norm(t)
         meaningful = [w for w in n.split() if w not in common]
-        if not n or n in seen or not meaningful or (len(n.split()) == 1 and t in words and (len(n) < 5 or n in common)):
+        # akela lafz ("Single", "Expert", "International") aam English — ghalat company ki email khulti thi.
+        # Isliye hisse kam se kam 2 lafz; sirf tab akela jab company ka naam hi ek lafz ho.
+        single = len(n.split()) == 1 and t in words and len(words) > 1
+        if not n or n in seen or not meaningful or single or (len(n.split()) == 1 and (len(n) < 4 or n in common)):
             continue
         seen.add(n)
         parts.append(t)
@@ -416,9 +419,15 @@ async def scan(force=False):
                     try:
                         await S.HUB.call("designer", "goto_quiet", tabId=tab, url=search, timeout=60)
                         await _wait_list(tab, search)
-                        res = await S.HUB.exec("designer", tab, "gmail_mark_unread", row["id"], timeout=30)
+                        res = None
+                        for _ in range(2):  # ek dafa aur koshish
+                            res = await S.HUB.exec("designer", tab, "gmail_mark_unread", row["id"], timeout=40)
+                            if res == "ok":
+                                break
+                            await _wait_list(tab, search)
                         if res != "ok":
-                            S.log(f"Gmail: email wapis unread nahi hui ({res})")
+                            S.log(f"Gmail: email wapis unread nahi hui ({res}) — {row['text'][:80]}")
+                            S.notify("Gmail: email unread nahi hui", f"{row['text'][:120]} — Gmail mein khud unread kar dena")
                     except Exception as e:
                         S.log(f"Gmail: email wapis unread nahi hui ({e})")
             save(data)

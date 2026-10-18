@@ -130,7 +130,10 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
     def test_name_split_into_parts_without_too_common_words(self):
         gmail_watch.setup(SimpleNamespace(**{**vars(gmail_watch.S), "STOPWORDS": server.STOPWORDS, "NOISE_WORDS": server.NOISE_WORDS}))
         self.assertEqual(gmail_watch.name_parts("Belle Clinic London UK"),
-                         ["Belle Clinic London UK", "BelleClinicLondonUK", "Belle Clinic London", "Belle Clinic", "Belle"])
+                         ["Belle Clinic London UK", "BelleClinicLondonUK", "Belle Clinic London", "Belle Clinic"])
+        # akela aam lafz kabhi nahi ("international seva" se "Tei ... International Ministries" khul gayi thi)
+        self.assertEqual(gmail_watch.name_parts("international seva"), ["international seva", "internationalseva"])
+        self.assertEqual(gmail_watch.name_parts("linkedup"), ["linkedup"])
         self.assertNotIn("Wear", gmail_watch.name_parts("Wear Wood"))     # 4 harf akela lafz bohat aam
         self.assertIn("Molen tax", gmail_watch.name_parts("The Molen tax"))
         self.assertNotIn("The", gmail_watch.name_parts("The Molen tax"))
