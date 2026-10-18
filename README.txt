@@ -196,3 +196,9 @@ GMAIL LIST UPDATE (2026-10-18 raat)
 - List roz chalti hai: har din har company ki aaj ki nayi file. "aaj mili" = mil gayi; "intezar" = abhi nahi aayi.
 - Pehli asal test: Wear Wood 9 Gmail ke Drive link se khuli aur automation ne khud bana di.
 - Dashboard ka "Server restart" button theek (RESTART_SERVER.bat khud banata hai).
+- Exact naam Gmail mein na mile -> naam ke hisse: "Belle Clinic London UK" -> "Belle Clinic London" -> "Belle Clinic" -> "Belle"
+  (+ bina space "Eliquid"; shuru ke aam lafz "The / Copy of" hata kar). Hisse se mili email -> sirf woh file jis ke naam mein woh hissa ho.
+- Sirf aakhri 5 din ki emails (config gmail_max_days). Ek company ki 2+ files hon -> PURANI pehle (Gmail mein neeche wali), phir nayi.
+- Gmail read/unread: file khul gayi / tab mein khuli -> email READ rehti hai. File na khul sake aur email pehle unread thi -> wapis UNREAD.
+- "Edit with Google Docs" kabhi 5-10 second baad aata hai: script ~25 second button ka aur ~45 second Docs tab ka intezar karti hai.
+- Ek file 2 tabs mein khuli ho -> sirf ek dafa banti hai. Abhi khul rahi tab (URL adhoora) se run crash nahi hota.

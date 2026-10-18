@@ -697,10 +697,12 @@ const PAGE = {
     const rows = [...document.querySelectorAll('tr.zA')].filter(vis).slice(0, 50).map((r, i) => {
       const idEl = r.querySelector('[data-legacy-thread-id], [data-thread-id]');
       const id = idEl ? (idEl.getAttribute('data-legacy-thread-id') || idEl.getAttribute('data-thread-id')) : 'row' + i;
-      return { i, id, text: (r.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 400) };
+      // background tab mein innerText khaali aa sakta hai -> textContent
+      const txt = (r.innerText || '').trim() || (r.textContent || '');
+      return { i, id, unread: r.classList.contains('zE'), text: txt.replace(/\s+/g, ' ').trim().slice(0, 400) };
     });
     const empty = [...document.querySelectorAll('td.TC, div.TC')].some(vis);
-    return { loggedOut: false, rows, empty, ready: rows.length > 0 || empty };
+    return { loggedOut: false, rows, empty, hash: location.hash, ready: rows.length > 0 || empty };
   },
   gmail_open_row: function (id) {
     const vis = e => !!(e && e.offsetParent);
@@ -715,21 +717,82 @@ const PAGE = {
     return true;
   },
   gmail_attachments: function () {
-    // khuli email (thread) ki attachments: naam + "Edit with Google Docs" button hai ya nahi
+    // khuli email ki attachments: naam + "Edit attachment with Google Docs <naam>" button hai ya nahi
     const vis = e => !!(e && e.offsetParent);
-    const cards = [...document.querySelectorAll('span[download_url], div[download_url]')].filter(vis);
-    const out = cards.map((c, i) => {
-      const du = c.getAttribute('download_url') || '';
-      const parts = du.split(':');
-      const name = parts.length > 2 ? parts[1] : ((c.querySelector('.aV3') || c).innerText || '').trim();
-      const edit = [...c.querySelectorAll('[aria-label], [data-tooltip]')].some(b =>
-        /(edit|open) with google docs/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || '')));
-      return { i, name, edit };
+    const EDIT = /^(?:edit(?: attachment)? with google docs|open(?: attachment)? with google docs)\s*(.*)$/i;
+    const dec = n => { try { return decodeURIComponent(n); } catch (e) { return n; } };
+    const names = new Map();
+    for (const c of document.querySelectorAll('span[download_url], div[download_url]')) {
+      if (!vis(c)) continue;
+      const parts = (c.getAttribute('download_url') || '').split(':');
+      if (parts.length > 2) names.set(dec(parts[1]).trim(), false);
+    }
+    for (const b of document.querySelectorAll('[aria-label^="Download attachment"]')) {
+      const n = b.getAttribute('aria-label').replace(/^Download attachment\s*/i, '').trim();
+      if (vis(b) && n && !names.has(n)) names.set(n, false);
+    }
+    for (const b of document.querySelectorAll('[aria-label], [data-tooltip]')) {
+      const m = EDIT.exec((b.getAttribute('aria-label') || b.getAttribute('data-tooltip') || '').trim());
+      if (m && vis(b) && m[1]) names.set(m[1].trim(), true);
+    }
+    return [...names].map(([name, edit], i) => ({ i, name, edit }));
+  },
+  gmail_edit: function (name) {
+    // us file ka dikhne wala "Edit attachment with Google Docs" button dabao
+    const vis = e => !!(e && e.offsetParent);
+    const EDIT = /^(?:edit(?: attachment)? with google docs|open(?: attachment)? with google docs)\s*(.*)$/i;
+    const fire = (el, types) => types.forEach(t => el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })));
+    const btns = [...document.querySelectorAll('[aria-label], [data-tooltip]')].filter(b => {
+      const m = EDIT.exec((b.getAttribute('aria-label') || b.getAttribute('data-tooltip') || '').trim());
+      return m && (!name || m[1].trim() === String(name).trim());
     });
-    if (out.length) return out;
-    // dusra tareeqa: "Download attachment <naam>" buttons
-    return [...document.querySelectorAll('[aria-label^="Download attachment"]')].map((b, i) => ({
-      i, name: (b.getAttribute('aria-label') || '').replace(/^Download attachment\s*/i, '').trim(), edit: null }));
+    const btn = btns.find(vis) || btns[0];
+    if (!btn) return 'Edit with Google Docs button nahi mila';
+    const card = btn.closest('span[download_url], div[download_url], .aQH, [role="listitem"]');
+    if (card) fire(card, ['mouseover', 'mouseenter', 'mousemove']);
+    fire(btn, ['mouseover', 'mousedown', 'mouseup', 'click']);
+    return 'ok';
+  },
+  gmail_mark_read: async function (id) {
+    // list mein us email ka checkbox select -> toolbar "Mark as read" (file tab mein khuli ho to email READ rahe)
+    const vis = e => !!(e && e.offsetParent);
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const fire = el => ['mouseover', 'mousedown', 'mouseup', 'click'].forEach(t =>
+      el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })));
+    const row = [...document.querySelectorAll('tr.zA')].filter(vis).find(r => { const el = r.querySelector('[data-legacy-thread-id], [data-thread-id]');
+      return el && (el.getAttribute('data-legacy-thread-id') === id || el.getAttribute('data-thread-id') === id); });
+    if (!row) return 'row nahi mili';
+    if (!row.classList.contains('zE')) return 'ok';  // pehle se read
+    const box = row.querySelector('[role="checkbox"]');
+    if (!box) return 'checkbox nahi mila';
+    if (box.getAttribute('aria-checked') !== 'true') fire(box);
+    await sleep(600);
+    const btn = [...document.querySelectorAll('[aria-label="Mark as read"], [data-tooltip="Mark as read"]')].find(vis);
+    if (!btn) { fire(box); return 'Mark as read button nahi mila'; }
+    fire(btn);
+    await sleep(800);
+    return row.classList.contains('zE') ? 'click hua, read confirm nahi' : 'ok';
+  },
+  gmail_mark_unread: async function (id) {
+    // list mein us email ka checkbox select -> toolbar "Mark as unread" (email kholni nahi parti)
+    const vis = e => !!(e && e.offsetParent);
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const fire = el => ['mouseover', 'mousedown', 'mouseup', 'click'].forEach(t =>
+      el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })));
+    const rows = [...document.querySelectorAll('tr.zA')].filter(vis);
+    const row = rows.find(r => { const el = r.querySelector('[data-legacy-thread-id], [data-thread-id]');
+      return el && (el.getAttribute('data-legacy-thread-id') === id || el.getAttribute('data-thread-id') === id); });
+    if (!row) return 'row nahi mili';
+    if (row.classList.contains('zE')) return 'ok';  // pehle se unread
+    const box = row.querySelector('[role="checkbox"]');
+    if (!box) return 'checkbox nahi mila';
+    if (box.getAttribute('aria-checked') !== 'true') fire(box);
+    await sleep(600);
+    const btn = [...document.querySelectorAll('[aria-label="Mark as unread"], [data-tooltip="Mark as unread"]')].find(vis);
+    if (!btn) { fire(box); return 'Mark as unread button nahi mila'; }
+    fire(btn);
+    await sleep(800);
+    return row.classList.contains('zE') ? 'ok' : 'click hua, unread confirm nahi';
   },
   gmail_doc_links: function () {
     // khuli email ke andar Drive / Docs file links (gmail_drive_chip ya aam link) -> file id
@@ -748,19 +811,5 @@ const PAGE = {
       out.push({ id: m[1], name: (a.getAttribute('aria-label') || a.innerText || '').trim().slice(0, 120), url: u });
     }
     return out;
-  },
-  gmail_edit: function (i) {
-    // attachment card par "Edit with Google Docs" (hover wala button) dabao
-    const vis = e => !!(e && e.offsetParent);
-    const cards = [...document.querySelectorAll('span[download_url], div[download_url]')].filter(vis);
-    const card = cards[i];
-    if (!card) return 'card nahi mila';
-    const fire = (el, types) => types.forEach(t => el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })));
-    fire(card, ['mouseover', 'mouseenter', 'mousemove']);
-    const btn = [...card.querySelectorAll('[aria-label], [data-tooltip]')].find(b =>
-      /(edit|open) with google docs/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || '')));
-    if (!btn) return 'Edit with Google Docs button nahi mila';
-    fire(btn, ['mouseover', 'mousedown', 'mouseup', 'click']);
-    return 'ok';
   },
 };

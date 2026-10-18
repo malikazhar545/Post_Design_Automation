@@ -17,7 +17,7 @@ class FakeHub:
         self.pause_requested = self.paused = self.running = False
         self.current, self.watching = {}, False
         self.docs = [{"url": "https://docs.google.com/document/d/old/edit", "title": "Old - Google Docs"}]
-        self.edit_result, self.calls, self.url, self.links = edit_result, [], "", []
+        self.edit_result, self.calls, self.url, self.links, self.urls = edit_result, [], "", [], []
 
     async def call(self, role, cmd, timeout=600, **args):
         self.calls.append(cmd)
@@ -27,6 +27,7 @@ class FakeHub:
             return list(self.docs)
         if cmd == "goto_quiet":
             self.url = args["url"]
+            self.urls.append(args["url"])
         if cmd == "open_tab":  # Drive link -> Docs tab
             self.docs.append({"url": args["url"], "title": "Wear Wood 10 - Google Docs"})
         return True
@@ -38,7 +39,8 @@ class FakeHub:
             rows = [{"i": 0, "id": "t1", "text": "Client Wear Wood posts Wear Wood 9.docx"},
                     {"i": 1, "id": "t2", "text": "Invoice from someone else"}]
             name = (unquote(self.url).split('"') + ["", ""])[1].lower()
-            return {"ready": True, "rows": [r for r in rows if name and name in r["text"].lower()]}
+            found = [r for r in rows if name and name in r["text"].lower()]
+            return {"ready": True, "hash": "#" + self.url.split("#", 1)[-1], "rows": found, "empty": not found}
         if fn == "gmail_open_row":
             return True
         if fn == "gmail_doc_links":
@@ -117,6 +119,55 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.hub.calls.count("gmail_edit"), 0)
         self.assertFalse(gmail_watch.found_today(gmail_watch.load()["items"][0]))  # aaj ki nayi ka intezar
 
+    def test_name_split_into_parts_without_too_common_words(self):
+        gmail_watch.setup(SimpleNamespace(**{**vars(gmail_watch.S), "STOPWORDS": server.STOPWORDS, "NOISE_WORDS": server.NOISE_WORDS}))
+        self.assertEqual(gmail_watch.name_parts("Belle Clinic London UK"),
+                         ["Belle Clinic London UK", "BelleClinicLondonUK", "Belle Clinic London", "Belle Clinic", "Belle"])
+        self.assertNotIn("Wear", gmail_watch.name_parts("Wear Wood"))     # 4 harf akela lafz bohat aam
+        self.assertIn("Molen tax", gmail_watch.name_parts("The Molen tax"))
+        self.assertNotIn("The", gmail_watch.name_parts("The Molen tax"))
+
+    async def test_partial_name_match_opens_only_file_with_that_part(self):
+        self.hub.links = [{"id": "1" * 30, "name": "Random newsletter", "url": "u"}]
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood Pakistan"})  # poora naam Gmail mein nahi
+        await gmail_watch.scan(force=True)
+        self.assertNotIn("open_tab", self.hub.calls)                     # 'Wear Wood' hissa -> naam wali file hi
+        self.assertIn("t1|Wear Wood 9.docx", gmail_watch.load()["opened"])
+
+    async def test_two_available_files_older_one_opens_first_and_search_is_5_days(self):
+        rows = [{"i": 0, "id": "new", "text": "Wear Wood 11 18 Oct"}, {"i": 1, "id": "old", "text": "Wear Wood 10 16 Oct"}]
+        order = []
+        orig = self.hub.exec
+
+        async def exec_(role, tab, fn, *args, timeout=600):
+            if fn == "gmail_state":
+                return {"ready": True, "rows": rows, "hash": "#" + self.hub.url.split("#", 1)[-1]}
+            if fn == "gmail_open_row":
+                order.append(args[0])
+            return await orig(role, tab, fn, *args, timeout=timeout)
+        self.hub.exec = exec_
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertEqual(order, ["old", "new"])                  # neeche wali (purani) pehle
+        self.assertTrue(any("newer_than%3A5d" in u for u in self.hub.urls))           # 5 din se purani email search hi nahi
+
+    async def test_edit_button_that_appears_late_still_opens_file(self):
+        calls = {"n": 0}
+        orig = self.hub.exec
+
+        async def exec_(role, tab, fn, *args, timeout=600):
+            if fn == "gmail_edit":
+                calls["n"] += 1
+                if calls["n"] < 5:  # pehli 4 dafa button abhi nahi aaya (Gmail ka 5-10 second delay)
+                    self.hub.calls.append(fn)
+                    return "Edit with Google Docs button nahi mila"
+            return await orig(role, tab, fn, *args, timeout=timeout)
+        self.hub.exec = exec_
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertIn("t1|Wear Wood 9.docx", gmail_watch.load()["opened"])
+        self.assertNotIn("note", gmail_watch.load()["opened"]["t1|Wear Wood 9.docx"])
+
     def test_spreadsheet_paste_adds_every_name(self):
         gmail_watch.api_action("gmail_add", {"name": "1. Wear Wood\tBelle Clinic\r\n2) Linked up\n\nWear Wood\n• Molen tax"})
         self.assertEqual([i["name"] for i in gmail_watch.load()["items"]], ["Wear Wood", "Belle Clinic", "Linked up", "Molen tax"])
@@ -131,7 +182,7 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         gmail_watch.api_action("gmail_toggle", {"on": "1"})
         for _ in range(4):
             await gmail_watch.scan()
-        self.assertEqual(self.hub.calls.count("gmail_edit"), 3)
+        self.assertEqual(self.hub.calls.count("gmail_edit"), 3 * 17)  # 3 koshishen, har ek mein ~25 second sabr
         self.assertIn("Gmail: file nahi khuli", self.notes)
         self.assertEqual(self.started, [])
 

@@ -3128,6 +3128,17 @@ async def run_all(only=None, only_post=None):
         state = load_state()
         tabs = await HUB.call("designer", "list_doc_tabs")
         tabs = list(reversed(tabs))  # extension returns tab order left-to-right; start at the right edge
+        # ek hi file 2 tabs mein khuli ho -> sirf ek dafa line mein
+        uniq = {}
+        for t in tabs:
+            m = re.search(r"/document/d/([^/]+)", t["url"])
+            if not m:  # abhi khul rahi tab (URL poora nahi) -> agli check mein khud aa jayegi; run crash na ho
+                log(f"  (tab abhi khul rahi hai: {t.get('title') or t['url'][:60]} — thori der baad line mein)")
+                continue
+            uniq.setdefault(m.group(1), t)
+        if len(uniq) < len(tabs):
+            log(f"({len(tabs) - len(uniq)} file 2 dafa khuli thi — har file sirf ek dafa banegi)")
+        tabs = list(uniq.values())
         if only:
             tabs = [t for t in tabs if only.lower() in t["title"].lower()]
             log(f"(Test: sirf '{only}' wali file)")

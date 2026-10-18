@@ -14,6 +14,7 @@ from urllib.parse import quote
 S = None  # server module (setup() se)
 STATUS = {"last_scan": None, "message": "Band hai", "busy": False}
 DEFAULT_QUERY = ""  # Gmail mein sirf company ka naam search (config gmail_query se aur filter laga sakte ho)
+MAX_DAYS = 5       # is se purani email ki file kabhi nahi kholni (config gmail_max_days)
 TODAY_RE = re.compile(r"\b\d{1,2}:\d{2}(\s?[AaPp][Mm])?\s*$")  # list mein aaj ki email ka waqt (purani par tareekh)
 
 
@@ -80,6 +81,31 @@ def split_names(text):
     return out
 
 
+def name_parts(name):
+    """Exact naam na mile to hisse: 'Belle Clinic London UK' -> poora, 'Belle Clinic London', 'Belle Clinic', 'Belle'
+    + bina space ('E liquid' -> 'Eliquid'). Aam lafz ('the', 'copy', 'post'...) akele kabhi search nahi."""
+    common = getattr(S, "STOPWORDS", set()) | getattr(S, "NOISE_WORDS", set())
+    words = name.split()
+    out = [name]
+    if len(words) > 1:
+        out.append("".join(words))
+    # shuru ke aam lafz hata kar ("The Molen tax" -> "Molen tax", "Copy of Sweet..." -> "Sweet ...")
+    core = list(words)
+    while core and S.norm(core[0]) in common:
+        core.pop(0)
+    for ws in (words, core):
+        out += [" ".join(ws[:k]) for k in range(len(ws), 0, -1)]
+    seen, parts = set(), []
+    for t in out:
+        n = S.norm(t)
+        meaningful = [w for w in n.split() if w not in common]
+        if not n or n in seen or not meaningful or (len(n.split()) == 1 and t in words and (len(n) < 5 or n in common)):
+            continue
+        seen.add(n)
+        parts.append(t)
+    return parts
+
+
 def api_state():
     data = load()
     recent = sorted(data["opened"].values(), key=lambda x: x.get("at", ""), reverse=True)[:15]
@@ -141,12 +167,24 @@ async def loop():
         await safe_scan()
 
 
-async def _wait_list(tab, timeout=25):
-    t0 = time.time()
+async def _wait_list(tab, url=None, timeout=30):
+    """Search ke NATIJE ka intezar: URL wahi search ho, rows mein text ho, aur 2 dafa ek jaisa parha jaye
+    (warna pichle page / inbox ki purani rows se ghalat email khul sakti hai)."""
+    from urllib.parse import unquote_plus
+    want = unquote_plus(url.split("#", 1)[1]).lower() if url and "#" in url else None
+    t0, last = time.time(), None
     while time.time() - t0 < timeout:
         st = await S.HUB.exec("designer", tab, "gmail_state", timeout=30) or {}
-        if st.get("loggedOut") or st.get("ready"):
+        if st.get("loggedOut"):
             return st
+        here = unquote_plus((st.get("hash") or "").lstrip("#")).lower()
+        same_page = want is None or here == want
+        rows = st.get("rows") or []
+        ready = st.get("empty") or (rows and all(r.get("text") for r in rows))
+        sig = (here, tuple(r["id"] for r in rows), bool(st.get("empty")))
+        if same_page and ready and sig == last:
+            return st
+        last = sig if same_page and ready else None
         await asyncio.sleep(1.5)
     return {"rows": [], "ready": False}
 
@@ -163,11 +201,12 @@ def _done_or_open(stem, state, open_titles):
 
 async def _wait_new_doc(before):
     urls = {t["url"].split("#")[0].split("?")[0] for t in before}
-    for _ in range(20):  # Docs ki nayi tab ka intezar
+    for _ in range(30):  # Docs ki nayi tab ka intezar (45 second — jaldi email band nahi karni)
         await asyncio.sleep(1.5)
         tabs = await S.HUB.call("designer", "list_doc_tabs", timeout=20)
         new = next((t for t in tabs if t["url"].split("#")[0].split("?")[0] not in urls), None)
-        if new:
+        # tab tab hi "khuli" jab URL mein doc id aa jaye aur title load ho (adhoori tab se run crash hota tha)
+        if new and re.search(r"/document/d/[\w-]+", new["url"]) and new.get("title") and new["title"] != "Google Docs":
             return new
     return None
 
@@ -209,21 +248,23 @@ async def _open_link(link, row, item, data, state, opened_now):
     save(data)
 
 
-async def _open_thread_files(tab, row, item, data, state, opened_now):
+async def _open_thread_files(tab, row, item, data, state, opened_now, term=None):
     """Ek email kholo -> us ki .docx (company naam wali; na ho to saari) 'Edit with Google Docs' se kholo."""
     if not await S.HUB.exec("designer", tab, "gmail_open_row", row["id"], timeout=30):
         return
     atts = []
-    for _ in range(8):  # email khulne ka intezar (attachment ya Drive link)
+    for _ in range(14):  # email khulne ka intezar (attachment ya Drive link) — ~20 second
         await asyncio.sleep(1.5)
         atts = await S.HUB.exec("designer", tab, "gmail_attachments", timeout=30) or []
         if atts or await S.HUB.exec("designer", tab, "gmail_doc_links", timeout=30):
             break
     links = await S.HUB.exec("designer", tab, "gmail_doc_links", timeout=30) or []
-    for l in [l for l in links if S.norm(item["name"]) in S.norm(l.get("name", ""))] or links:
+    key_name = S.norm(term or item["name"])  # jis naam / hisse se email mili
+    exact = not term or S.norm(term) == S.norm(item["name"])  # hisse se mili -> sirf naam wali file (ghalat email na khule)
+    for l in [l for l in links if key_name in S.norm(l.get("name", ""))] or (links if exact else []):
         await _open_link(l, row, item, data, state, opened_now)
     docx = [a for a in atts if re.search(r"\.docx?$", a.get("name", ""), re.I)]
-    pick = [a for a in docx if S.norm(item["name"]) in S.norm(a["name"])] or docx
+    pick = [a for a in docx if key_name in S.norm(a["name"])] or (docx if exact else [])
     for a in pick:
         if blocked():
             return
@@ -236,16 +277,14 @@ async def _open_thread_files(tab, row, item, data, state, opened_now):
         if why:  # pehle se khuli / ban chuki -> dobara nahi kholni
             _mark(item, data, key, a["name"], why)
             continue
-        res = await S.HUB.exec("designer", tab, "gmail_edit", a["i"], timeout=30)
-        new = None
-        if res == "ok":
-            urls = {t["url"].split("#")[0] for t in before}
-            for _ in range(20):  # Docs ki nayi tab ka intezar
-                await asyncio.sleep(1.5)
-                now_tabs = await S.HUB.call("designer", "list_doc_tabs", timeout=20)
-                new = next((t for t in now_tabs if t["url"].split("#")[0] not in urls), None)
-                if new:
-                    break
+        # "Edit with Google Docs" kabhi foran, kabhi 5-10 second baad aata hai -> 25 second tak sabr
+        res = None
+        for _ in range(17):
+            res = await S.HUB.exec("designer", tab, "gmail_edit", a["name"], timeout=30)
+            if res == "ok":
+                break
+            await asyncio.sleep(1.5)
+        new = await _wait_new_doc(before) if res == "ok" else None
         if new:
             data["opened"][key] = {"file": a["name"], "company": item["name"], "at": now()}
             item.setdefault("found", []).append({"file": a["name"], "at": now()})
@@ -290,22 +329,43 @@ async def scan(force=False):
         for item in pending:
             if blocked():  # beech mein file shuru ho gayi -> foran ruko
                 break
-            search = base + "#search/" + quote(f'{query} "{item["name"]}"'.strip())
-            if tab is None:
-                tab = await S.HUB.call("designer", "gmail_tab", url=search, timeout=60)
-            await S.HUB.call("designer", "goto_quiet", tabId=tab, url=search, timeout=60)
-            st = await _wait_list(tab)
-            if st.get("loggedOut"):
-                STATUS["message"] = "Designer profile mein Gmail login nahi"
-                return
-            rows = st.get("rows", [])
-            rows = rows[:1] + [r for r in rows[1:6] if TODAY_RE.search(r["text"])]  # nayi + aaj ki
+            # pehle poora naam; email na mile to naam ke hisse (Belle Clinic London UK -> Belle Clinic -> Belle)
+            rows, term = [], item["name"]
+            for term in name_parts(item["name"]):
+                days = int(S.CFG.get("gmail_max_days", MAX_DAYS))  # 5 din se purani email kabhi nahi
+                search = base + "#search/" + quote(f'{query} "{term}" newer_than:{days}d'.strip())
+                if tab is None:
+                    tab = await S.HUB.call("designer", "gmail_tab", url=search, timeout=60)
+                await S.HUB.call("designer", "goto_quiet", tabId=tab, url=search, timeout=60)
+                st = await _wait_list(tab, search)
+                if st.get("loggedOut"):
+                    STATUS["message"] = "Designer profile mein Gmail login nahi"
+                    return
+                rows = st.get("rows", [])
+                if rows:
+                    if term != item["name"]:
+                        S.log(f"Gmail: '{item['name']}' poora naam nahi mila — '{term}' se email mili")
+                    break
+            rows = list(reversed(rows[:10]))  # kai files hon to PURANI pehle (Gmail list mein neeche wali), phir nayi
             for row in rows:
                 if blocked():
                     break
                 await S.HUB.call("designer", "goto_quiet", tabId=tab, url=search, timeout=60)
-                await _wait_list(tab)
-                await _open_thread_files(tab, row, item, data, state, opened_now)
+                await _wait_list(tab, search)
+                await _open_thread_files(tab, row, item, data, state, opened_now, term)
+                # file khul gayi / pehle se tab mein khuli -> email READ hi rahe.
+                # File na khul saki aur email pehle unread thi -> wapis UNREAD (aap pending files isi se dekhte ho)
+                got = any(k.startswith(row["id"] + "|") and v.get("note") in (None, "pehle se khuli hai")
+                          for k, v in data["opened"].items())
+                if row.get("unread") and not got:
+                    try:
+                        await S.HUB.call("designer", "goto_quiet", tabId=tab, url=search, timeout=60)
+                        await _wait_list(tab, search)
+                        res = await S.HUB.exec("designer", tab, "gmail_mark_unread", row["id"], timeout=30)
+                        if res != "ok":
+                            S.log(f"Gmail: email wapis unread nahi hui ({res})")
+                    except Exception as e:
+                        S.log(f"Gmail: email wapis unread nahi hui ({e})")
             save(data)
         if tab is not None:
             await S.HUB.call("designer", "goto_quiet", tabId=tab, url=base + "#inbox", timeout=60)
