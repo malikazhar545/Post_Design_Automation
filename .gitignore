@@ -8,3 +8,4 @@ style_refs/
 __pycache__/
 *.pyc
 tests/_runs/
+RESTART_SERVER.bat

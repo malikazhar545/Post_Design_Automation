@@ -136,7 +136,7 @@
     "envato"
   ],
   "gmail_url": "https://mail.google.com/mail/u/0/",
-  "gmail_query": "has:attachment filename:docx newer_than:1d",
+  "gmail_query": "",
   "gmail_scan_seconds": 30,
   "gmail_autostart": true
 }

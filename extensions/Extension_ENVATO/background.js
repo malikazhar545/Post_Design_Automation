@@ -731,6 +731,24 @@ const PAGE = {
     return [...document.querySelectorAll('[aria-label^="Download attachment"]')].map((b, i) => ({
       i, name: (b.getAttribute('aria-label') || '').replace(/^Download attachment\s*/i, '').trim(), edit: null }));
   },
+  gmail_doc_links: function () {
+    // khuli email ke andar Drive / Docs file links (gmail_drive_chip ya aam link) -> file id
+    const vis = e => !!(e && e.offsetParent);
+    const out = [], seen = new Set();
+    for (const a of document.querySelectorAll('.a3s a[href], .gmail_chip a[href]')) {
+      if (!vis(a)) continue;
+      let u = a.getAttribute('href') || '';
+      const safe = a.getAttribute('data-saferedirecturl') || '';
+      const m0 = /[?&]q=([^&]+)/.exec(safe);
+      if (!/google\.com\/(file|document|open)|docs\.google\.com|drive\.google\.com/.test(u) && m0) u = decodeURIComponent(m0[1]);
+      const m = /docs\.google\.com\/document\/d\/([\w-]{20,})/.exec(u) || /drive\.google\.com\/file\/d\/([\w-]{20,})/.exec(u)
+        || /drive\.google\.com\/open\?id=([\w-]{20,})/.exec(u);
+      if (!m || seen.has(m[1])) continue;
+      seen.add(m[1]);
+      out.push({ id: m[1], name: (a.getAttribute('aria-label') || a.innerText || '').trim().slice(0, 120), url: u });
+    }
+    return out;
+  },
   gmail_edit: function (i) {
     // attachment card par "Edit with Google Docs" (hover wala button) dabao
     const vis = e => !!(e && e.offsetParent);

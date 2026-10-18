@@ -17,7 +17,7 @@ class FakeHub:
         self.pause_requested = self.paused = self.running = False
         self.current, self.watching = {}, False
         self.docs = [{"url": "https://docs.google.com/document/d/old/edit", "title": "Old - Google Docs"}]
-        self.edit_result, self.calls = edit_result, []
+        self.edit_result, self.calls, self.url, self.links = edit_result, [], "", []
 
     async def call(self, role, cmd, timeout=600, **args):
         self.calls.append(cmd)
@@ -25,15 +25,24 @@ class FakeHub:
             return 7
         if cmd == "list_doc_tabs":
             return list(self.docs)
+        if cmd == "goto_quiet":
+            self.url = args["url"]
+        if cmd == "open_tab":  # Drive link -> Docs tab
+            self.docs.append({"url": args["url"], "title": "Wear Wood 10 - Google Docs"})
         return True
 
     async def exec(self, role, tab, fn, *args, timeout=600):
         self.calls.append(fn)
-        if fn == "gmail_state":
-            return {"ready": True, "rows": [{"i": 0, "id": "t1", "text": "Client Wear Wood posts Wear Wood 9.docx"},
-                                            {"i": 1, "id": "t2", "text": "Invoice from someone else"}]}
+        if fn == "gmail_state":  # Gmail search: sirf woh email jis mein company ka naam ho
+            from urllib.parse import unquote
+            rows = [{"i": 0, "id": "t1", "text": "Client Wear Wood posts Wear Wood 9.docx"},
+                    {"i": 1, "id": "t2", "text": "Invoice from someone else"}]
+            name = (unquote(self.url).split('"') + ["", ""])[1].lower()
+            return {"ready": True, "rows": [r for r in rows if name and name in r["text"].lower()]}
         if fn == "gmail_open_row":
             return True
+        if fn == "gmail_doc_links":
+            return list(self.links)
         if fn == "gmail_attachments":
             return [{"i": 0, "name": "Wear Wood 9.docx", "edit": True}]
         if fn == "gmail_edit":
@@ -83,6 +92,34 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.hub.current, self.hub.paused = {}, True      # run pause par -> bhi nahi
         await gmail_watch.scan()
         self.assertEqual(self.hub.calls, [])
+
+    async def test_already_open_file_marked_found_not_reopened(self):
+        self.hub.docs.append({"url": "https://docs.google.com/document/d/x/edit", "title": "Wear Wood 9.docx - Google Docs"})
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertEqual(self.hub.calls.count("gmail_edit"), 0)
+        self.assertTrue(gmail_watch.found_today(gmail_watch.load()["items"][0]))
+        self.assertEqual(self.started, [])
+
+    async def test_drive_link_in_email_opened_in_docs(self):
+        self.hub.links = [{"id": "1WQm21Kj9r2J_qv_OgBEHwo7s8LsLuGgsVYEbcCZs86U", "name": "Wear Wood 10", "url": "https://drive.google.com/open?id=x"}]
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertIn("open_tab", self.hub.calls)
+        self.assertTrue(any("docs.google.com/document/d/1WQm21Kj9r2J_qv_OgBEHwo7s8LsLuGgsVYEbcCZs86U/edit" in d["url"] for d in self.hub.docs))
+        self.assertEqual(self.started, [True])
+
+    async def test_old_done_file_not_reopened_and_company_keeps_waiting(self):
+        gmail_watch.setup(SimpleNamespace(**{**vars(gmail_watch.S), "load_state": lambda: {
+            "d": {"status": "done", "title": "Wear Wood 9.docx - Google Docs"}}}))
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertEqual(self.hub.calls.count("gmail_edit"), 0)
+        self.assertFalse(gmail_watch.found_today(gmail_watch.load()["items"][0]))  # aaj ki nayi ka intezar
+
+    def test_spreadsheet_paste_adds_every_name(self):
+        gmail_watch.api_action("gmail_add", {"name": "1. Wear Wood\tBelle Clinic\r\n2) Linked up\n\nWear Wood\n• Molen tax"})
+        self.assertEqual([i["name"] for i in gmail_watch.load()["items"]], ["Wear Wood", "Belle Clinic", "Linked up", "Molen tax"])
 
     async def test_off_or_empty_list_does_nothing(self):
         await gmail_watch.scan()

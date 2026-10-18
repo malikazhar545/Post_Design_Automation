@@ -3320,8 +3320,11 @@ def restart_server(shutdown_only=False):
     import os
     import subprocess
     if not shutdown_only:
-        subprocess.Popen(["cmd", "/c", "start", "Post Design Automation - SERVER", "cmd", "/c",
-                          "timeout /t 3 /nobreak >nul & START_SERVER.bat"], cwd=BASE)
+        # alag .bat (quote / & ka masla nahi): 3 second ruko (purana server port chhode) -> START_SERVER.bat
+        bat = BASE / "RESTART_SERVER.bat"
+        start_bat = BASE / "START_SERVER.bat"  # poora path (folder naam mein spaces)
+        bat.write_bytes(f'@echo off\r\ncd /d "{BASE}"\r\nping -n 4 127.0.0.1 >nul\r\ncall "{start_bat}"\r\n'.encode("mbcs"))
+        subprocess.Popen(["cmd", "/c", str(bat)], cwd=BASE, creationflags=subprocess.CREATE_NEW_CONSOLE)
     log("Server " + ("band ho raha hai (dashboard se)" if shutdown_only else "restart ho raha hai (dashboard se)"))
     asyncio.get_event_loop().call_later(0.8, os._exit, 0)
 

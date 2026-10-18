@@ -186,3 +186,13 @@ GMAIL LIST (2026-10-18) — so jao, files khud khulengi
   3 dafa na khule -> popup "khud khol lo".
 - Extension v3.0: Designer profile mein sirf mail.google.com ke popups allow (Edit with Google Docs nayi tab kholta hai).
 - Pehli dafa: "Abhi scan karo" daba kar dekh lo file khulti hai (Gmail ka design badle to yahan bataye ga).
+
+GMAIL LIST UPDATE (2026-10-18 raat)
+-----------------------------------
+- Gmail mein SIRF company ka naam search hota hai (har company alag). Email mein Drive / Docs LINK (jaise "Wear Wood 9" chip)
+  ya .docx ATTACHMENT — dono khulte hain. Link: seedha Docs mein (same file id). Attachment: "Edit with Google Docs".
+- Sirf sab se NAYI email (+ aaj ki emails) — purani files (Wear Wood 2..8) dobara nahi khultin. Ban chuki / khuli file nahi khulti.
+- Poori list ek saath: spreadsheet ka column copy kar ke Gmail list box mein paste karo.
+- List roz chalti hai: har din har company ki aaj ki nayi file. "aaj mili" = mil gayi; "intezar" = abhi nahi aayi.
+- Pehli asal test: Wear Wood 9 Gmail ke Drive link se khuli aur automation ne khud bana di.
+- Dashboard ka "Server restart" button theek (RESTART_SERVER.bat khud banata hai).
