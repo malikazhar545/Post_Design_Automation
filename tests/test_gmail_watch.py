@@ -168,6 +168,32 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("t1|Wear Wood 9.docx", gmail_watch.load()["opened"])
         self.assertNotIn("note", gmail_watch.load()["opened"]["t1|Wear Wood 9.docx"])
 
+    async def test_three_available_files_only_two_oldest_open_today(self):
+        rows = [{"i": 0, "id": "c", "text": "Wear Wood 12 18 Oct"}, {"i": 1, "id": "b", "text": "Wear Wood 11 17 Oct"},
+                {"i": 2, "id": "a", "text": "Wear Wood 10 16 Oct"}]
+        order, n = [], {"k": 0}
+        orig = self.hub.exec
+
+        async def exec_(role, tab, fn, *args, timeout=600):
+            if fn == "gmail_state":
+                return {"ready": True, "rows": rows, "hash": "#" + self.hub.url.split("#", 1)[-1]}
+            if fn == "gmail_open_row":
+                order.append(args[0])
+            if fn == "gmail_attachments":
+                return [{"i": 0, "name": f"Wear Wood {order[-1]}.docx", "edit": True}]
+            if fn == "gmail_edit":
+                n["k"] += 1
+                self.hub.docs.append({"url": f"https://docs.google.com/document/d/n{n['k']}/edit", "title": f"Doc {n['k']} - Google Docs"})
+                return "ok"
+            return await orig(role, tab, fn, *args, timeout=timeout)
+        self.hub.exec = exec_
+        gmail_watch.api_action("gmail_add", {"name": "Wear Wood"})
+        await gmail_watch.scan(force=True)
+        self.assertEqual(order, ["a", "b"])                      # sab se purani 2 — teesri (c) kal
+        self.assertEqual(len(gmail_watch.found_today(gmail_watch.load()["items"][0])), 2)
+        await gmail_watch.scan(force=True)                       # aaj dobara scan: had puri -> kuch nahi
+        self.assertEqual(order, ["a", "b"])
+
     def test_spreadsheet_paste_adds_every_name(self):
         gmail_watch.api_action("gmail_add", {"name": "1. Wear Wood\tBelle Clinic\r\n2) Linked up\n\nWear Wood\n• Molen tax"})
         self.assertEqual([i["name"] for i in gmail_watch.load()["items"]], ["Wear Wood", "Belle Clinic", "Linked up", "Molen tax"])

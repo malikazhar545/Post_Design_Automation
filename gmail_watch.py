@@ -66,6 +66,15 @@ def today():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def per_day():
+    """Ek company ki ek din mein zyada se zyada itni files (baqi agle din) — config gmail_max_per_day."""
+    return max(1, int(S.CFG.get("gmail_max_per_day", 2)))
+
+
+def left_today(item):
+    return per_day() - len(found_today(item))
+
+
 def found_today(item):
     return [f for f in item.get("found") or [] if f.get("at", "").startswith(today())]
 
@@ -109,7 +118,7 @@ def name_parts(name):
 def api_state():
     data = load()
     recent = sorted(data["opened"].values(), key=lambda x: x.get("at", ""), reverse=True)[:15]
-    items = [dict(i, today=found_today(i)) for i in data["items"]]
+    items = [dict(i, today=found_today(i), limit=per_day()) for i in data["items"]]
     return {"enabled": data["enabled"], "items": items, "recent": recent,
             "status": STATUS, "interval": S.CFG.get("gmail_scan_seconds", 300),
             "query": S.CFG.get("gmail_query", DEFAULT_QUERY)}
@@ -226,7 +235,7 @@ def _mark(item, data, key, name, note=None):
 async def _open_link(link, row, item, data, state, opened_now):
     """Email ke andar Drive / Docs link ('Wear Wood 9' chip) -> Google Docs mein kholo (same file id)."""
     key = f"{row['id']}|{link['id']}"
-    if key in data["opened"] or blocked():
+    if key in data["opened"] or blocked() or left_today(item) <= 0:  # aaj ki had (2) puri -> baqi kal
         return
     name = link.get("name") or link["id"]
     before = await S.HUB.call("designer", "list_doc_tabs", timeout=20)
@@ -269,7 +278,7 @@ async def _open_thread_files(tab, row, item, data, state, opened_now, term=None)
     docx = [a for a in atts if re.search(r"\.docx?$", a.get("name", ""), re.I)]
     pick = [a for a in docx if key_name in S.norm(a["name"])] or (docx if exact else [])
     for a in pick:
-        if blocked():
+        if blocked() or left_today(item) <= 0:  # aaj ki had (2) puri -> baqi kal
             return
         key = f"{row['id']}|{a['name']}"
         if key in data["opened"]:
@@ -309,12 +318,12 @@ async def scan(force=False):
     data = load()
     if not data["enabled"] and not force:
         return
-    pending = [i for i in data["items"] if not found_today(i)]
+    pending = [i for i in data["items"] if left_today(i) > 0]  # aaj 2 se kam khuli -> abhi dhoondo
     if not data["items"]:
         STATUS["message"] = "List khaali — company ka naam add karo"
         return
     if not pending:
-        STATUS["message"] = "Aaj list ki saari companies ki file mil gayi"
+        STATUS["message"] = f"Aaj har company ki had puri ({per_day()} file) — baqi files kal"
         return
     why = blocked()
     if why:
@@ -356,7 +365,7 @@ async def scan(force=False):
                     break
             rows = list(reversed(rows[:10]))  # kai files hon to PURANI pehle (Gmail list mein neeche wali), phir nayi
             for row in rows:
-                if blocked():
+                if blocked() or left_today(item) <= 0:  # purani pehle; aaj 2 ho gayin to baqi kal
                     break
                 await S.HUB.call("designer", "goto_quiet", tabId=tab, url=search, timeout=60)
                 await _wait_list(tab, search)
@@ -377,7 +386,7 @@ async def scan(force=False):
             save(data)
         if tab is not None:
             await S.HUB.call("designer", "goto_quiet", tabId=tab, url=base + "#inbox", timeout=60)
-        left = [i["name"] for i in data["items"] if not found_today(i)]
+        left = [i["name"] for i in data["items"] if not found_today(i)]  # aaj ek bhi nahi mili
         STATUS["message"] = ((f"{len(opened_now)} file khuli: {', '.join(opened_now)}. " if opened_now else "")
                              + (f"Intezar: {', '.join(left)}" if left else "Aaj list ki saari files mil gayin"))
     finally:

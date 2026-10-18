@@ -204,3 +204,5 @@ GMAIL LIST UPDATE (2026-10-18 raat)
 - Ek file 2 tabs mein khuli ho -> sirf ek dafa banti hai. Abhi khul rahi tab (URL adhoora) se run crash nahi hota.
 - Gmail list: har 5 MINUTE scan (config gmail_scan_seconds = 300). Har scan se pehle Gmail poora REFRESH (nayi aayi files zaroor dikhen).
   Switch ON karte hi pehla scan foran.
+- Ek company ki din mein ZYADA SE ZYADA 2 files (config gmail_max_per_day). 5 din mein 3 pari hon -> sab se purani 2 aaj, teesri kal.
+  Dashboard: "aaj 1/2" = aaj ek khuli, ek aur khul sakti hai.

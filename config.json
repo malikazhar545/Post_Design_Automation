@@ -139,5 +139,6 @@
   "gmail_query": "",
   "gmail_scan_seconds": 300,
   "gmail_autostart": true,
-  "gmail_max_days": 5
+  "gmail_max_days": 5,
+  "gmail_max_per_day": 2
 }
