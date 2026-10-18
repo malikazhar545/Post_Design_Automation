@@ -137,7 +137,7 @@
   ],
   "gmail_url": "https://mail.google.com/mail/u/0/",
   "gmail_query": "",
-  "gmail_scan_seconds": 30,
+  "gmail_scan_seconds": 300,
   "gmail_autostart": true,
   "gmail_max_days": 5
 }

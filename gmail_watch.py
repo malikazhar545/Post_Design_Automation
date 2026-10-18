@@ -111,7 +111,7 @@ def api_state():
     recent = sorted(data["opened"].values(), key=lambda x: x.get("at", ""), reverse=True)[:15]
     items = [dict(i, today=found_today(i)) for i in data["items"]]
     return {"enabled": data["enabled"], "items": items, "recent": recent,
-            "status": STATUS, "interval": S.CFG.get("gmail_scan_seconds", 30),
+            "status": STATUS, "interval": S.CFG.get("gmail_scan_seconds", 300),
             "query": S.CFG.get("gmail_query", DEFAULT_QUERY)}
 
 
@@ -139,8 +139,11 @@ def api_action(do, q):
     if do == "gmail_toggle":
         data["enabled"] = q.get("on") == "1"
         save(data)
-        STATUS["message"] = "ON — har 30 second scan" if data["enabled"] else "Band hai"
+        mins = max(1, int(S.CFG.get("gmail_scan_seconds", 300)) // 60)
+        STATUS["message"] = f"ON — har {mins} minute Gmail refresh + search" if data["enabled"] else "Band hai"
         S.log("Gmail watch list " + ("ON" if data["enabled"] else "OFF"))
+        if data["enabled"] and not STATUS["busy"]:  # ON karte hi pehla scan foran (5 minute ka intezar nahi)
+            asyncio.get_event_loop().create_task(safe_scan())
         return {"ok": True, "message": "Gmail scan ON" if data["enabled"] else "Gmail scan OFF"}
     if do == "gmail_scan":
         if STATUS["busy"]:
@@ -163,7 +166,7 @@ async def safe_scan(force=False):
 
 async def loop():
     while True:
-        await asyncio.sleep(max(15, int(S.CFG.get("gmail_scan_seconds", 30))))
+        await asyncio.sleep(max(60, int(S.CFG.get("gmail_scan_seconds", 300))))
         await safe_scan()
 
 
@@ -326,6 +329,11 @@ async def scan(force=False):
         query = S.CFG.get("gmail_query", DEFAULT_QUERY)
         state = S.load_state()
         tab = None
+        # har scan se pehle Gmail poora REFRESH (nayi emails zaroor nazar aayen) — ?r= se page dobara load hota hai
+        inbox = base + f"?r={int(time.time())}#inbox"
+        tab = await S.HUB.call("designer", "gmail_tab", url=inbox, timeout=60)
+        await S.HUB.call("designer", "goto_quiet", tabId=tab, url=inbox, timeout=90)
+        await asyncio.sleep(3)
         for item in pending:
             if blocked():  # beech mein file shuru ho gayi -> foran ruko
                 break

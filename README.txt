@@ -202,3 +202,5 @@ GMAIL LIST UPDATE (2026-10-18 raat)
 - Gmail read/unread: file khul gayi / tab mein khuli -> email READ rehti hai. File na khul sake aur email pehle unread thi -> wapis UNREAD.
 - "Edit with Google Docs" kabhi 5-10 second baad aata hai: script ~25 second button ka aur ~45 second Docs tab ka intezar karti hai.
 - Ek file 2 tabs mein khuli ho -> sirf ek dafa banti hai. Abhi khul rahi tab (URL adhoora) se run crash nahi hota.
+- Gmail list: har 5 MINUTE scan (config gmail_scan_seconds = 300). Har scan se pehle Gmail poora REFRESH (nayi aayi files zaroor dikhen).
+  Switch ON karte hi pehla scan foran.
