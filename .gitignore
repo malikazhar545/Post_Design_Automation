@@ -1,0 +1,10 @@
+# client ka data / bari files — sirf local
+Output/
+style_refs/
+*.mp4
+*.mov
+
+# Python / tests
+__pycache__/
+*.pyc
+tests/_runs/

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Post Automation - WASEEM",
+  "version": "3.0",
+  "description": "Post design automation helper (WASEEM profile)",
+  "permissions": ["tabs", "scripting", "storage", "downloads", "alarms", "notifications", "tabGroups", "contentSettings"],
+  "icons": { "128": "icon.png" },
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Post Automation - WASEEM", "default_popup": "popup.html" }
+}

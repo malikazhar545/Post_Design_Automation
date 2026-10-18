@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Post Automation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --bg: #0b1120; --bg-2: #0f172a; --card: #131c2e; --card-2: #182338; --line: #26334d; --line-2: #33415c;
+  --text: #f1f5f9; --text-2: #cbd5e1; --muted: #94a3b8;
+  --green: #22c55e; --green-bg: rgba(34,197,94,.12); --green-text: #4ade80;
+  --amber: #f59e0b; --amber-bg: rgba(245,158,11,.13); --amber-text: #fbbf24;
+  --red: #ef4444; --red-bg: rgba(239,68,68,.13); --red-text: #f87171;
+  --blue: #3b82f6; --blue-bg: rgba(59,130,246,.14); --blue-text: #60a5fa;
+  --violet: #a78bfa; --violet-bg: rgba(167,139,250,.14);
+  --c-post: #60a5fa; --c-story: #f472b6; --c-carousel: #a78bfa; --c-mockup: #fbbf24; --c-reel: #2dd4bf;
+  --focus: #93c5fd; --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.25);
+  --radius: 12px; --font: "Fira Sans", system-ui, "Segoe UI", sans-serif; --mono: "Fira Code", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f1f5f9; --bg-2: #e9eef5; --card: #ffffff; --card-2: #f8fafc; --line: #e2e8f0; --line-2: #cbd5e1;
+  --text: #0f172a; --text-2: #334155; --muted: #5b6b82;
+  --green: #16a34a; --green-bg: #dcfce7; --green-text: #15803d;
+  --amber: #d97706; --amber-bg: #fef3c7; --amber-text: #a15c07;
+  --red: #dc2626; --red-bg: #fee2e2; --red-text: #b91c1c;
+  --blue: #2563eb; --blue-bg: #dbeafe; --blue-text: #1d4ed8;
+  --violet: #7c3aed; --violet-bg: #ede9fe;
+  --c-post: #2563eb; --c-story: #db2777; --c-carousel: #7c3aed; --c-mockup: #d97706; --c-reel: #0d9488;
+  --focus: #2563eb; --shadow: 0 1px 2px rgba(15,23,42,.06), 0 4px 16px rgba(15,23,42,.05);
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 15px/1.5 var(--font); min-height: 100dvh; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 8px; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.icon { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon.sm { width: 15px; height: 15px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- top bar ---------- */
+.topbar { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.topbar-in { max-width: 1440px; margin: 0 auto; padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand-mark { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
+  background: linear-gradient(135deg, #22c55e, #16a34a); color: #052e16; }
+.brand h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+.brand small { display: block; color: var(--muted); font-size: 12px; margin-top: -2px; }
+.status-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px;
+  font-weight: 600; font-size: 13px; border: 1px solid transparent; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+.pulse .dot { animation: pulse 1.6s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+.st-running { background: var(--green-bg); color: var(--green-text); }
+.st-paused { background: var(--amber-bg); color: var(--amber-text); }
+.st-idle { background: var(--blue-bg); color: var(--blue-text); }
+.st-off { background: var(--red-bg); color: var(--red-text); }
+.profiles { display: flex; gap: 6px; flex-wrap: wrap; }
+.prof { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 8px; font-size: 12.5px;
+  background: var(--card); border: 1px solid var(--line); color: var(--text-2); }
+.prof .dot { width: 7px; height: 7px; }
+.prof.on .dot { color: var(--green); } .prof.off .dot { color: var(--red); } .prof.off { color: var(--muted); }
+.spacer { flex: 1; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 16px;
+  border-radius: 10px; border: 1px solid var(--line-2); background: var(--card); cursor: pointer; font-weight: 600;
+  font-size: 14px; transition: background .15s, border-color .15s, transform .1s, opacity .15s; }
+.btn:hover { background: var(--card-2); }
+.btn:active { transform: scale(.97); }
+.btn[disabled] { opacity: .45; cursor: not-allowed; transform: none; }
+.btn.primary { background: var(--green); border-color: var(--green); color: #052e16; }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.warn { background: var(--amber-bg); border-color: color-mix(in srgb, var(--amber) 45%, transparent); color: var(--amber-text); }
+.btn.danger { color: var(--red-text); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+.btn.ghost { border-color: transparent; background: transparent; padding: 0 10px; }
+.btn.icon-only { width: 40px; padding: 0; }
+.menu { position: relative; }
+.menu-list { position: absolute; right: 0; top: calc(100% + 6px); min-width: 230px; background: var(--card); border: 1px solid var(--line-2);
+  border-radius: 12px; box-shadow: var(--shadow); padding: 6px; display: none; z-index: 30; }
+.menu.open .menu-list { display: block; }
+.menu-list button { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; border-radius: 8px;
+  border: 0; background: none; cursor: pointer; min-height: 40px; }
+.menu-list button:hover { background: var(--card-2); }
+.menu-list small { display: block; color: var(--muted); font-size: 12px; }
+
+/* ---------- tabs ---------- */
+.tabs { max-width: 1440px; margin: 0 auto; padding: 0 20px; display: flex; gap: 4px; overflow-x: auto; }
+.tab { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 0; background: none; cursor: pointer;
+  color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; white-space: nowrap; min-height: 44px; }
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--green); }
+.badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--red); color: #fff; font-size: 11.5px;
+  display: inline-grid; place-items: center; font-weight: 700; }
+.badge[hidden] { display: none; }
+
+main { max-width: 1440px; margin: 0 auto; padding: 20px; }
+.view[hidden] { display: none; }
+.banner { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--radius); margin-bottom: 16px;
+  background: var(--red-bg); color: var(--red-text); border: 1px solid color-mix(in srgb, var(--red) 35%, transparent); }
+.banner b { color: var(--text); }
+.banner[hidden] { display: none; }
+
+/* ---------- cards ---------- */
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.card-h { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.card-h h2 { margin: 0; font-size: 15px; font-weight: 700; }
+.card-h .muted { margin-left: auto; }
+.card-b { padding: 16px; }
+.muted { color: var(--muted); font-size: 13px; }
+.grid-main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }
+.stack { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+.stack > *, .grid-main > *, .kpis > * { min-width: 0; }
+body { overflow-x: hidden; }
+
+/* now running */
+.now { display: grid; grid-template-columns: auto 1fr auto; gap: 16px; align-items: center; padding: 18px; }
+.now-ic { width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; }
+.now-ic .icon { width: 26px; height: 26px; }
+.now h2 { margin: 0; font-size: 19px; line-height: 1.3; }
+.now p { margin: 4px 0 0; color: var(--text-2); overflow-wrap: anywhere; }
+.now .act { font-family: var(--mono); font-size: 12.5px; color: var(--muted); margin-top: 8px; overflow-wrap: anywhere; }
+.progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 12px; }
+.progress > i { display: block; height: 100%; background: var(--green); border-radius: 99px; transition: width .4s ease-out; }
+.now-side { text-align: right; }
+.now-side .big { font-size: 26px; font-weight: 700; }
+
+/* KPIs */
+.kpis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; }
+.kpi { padding: 14px 16px; position: relative; overflow: hidden; }
+.kpi .lbl { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.kpi .val { font-size: 30px; font-weight: 700; margin-top: 6px; line-height: 1.1; }
+.kpi .sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.kpi::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--k, var(--line-2)); }
+
+/* company / file list */
+.company { border-top: 1px solid var(--line); }
+.company:first-child { border-top: 0; }
+.company-h { display: flex; align-items: center; gap: 12px; padding: 12px 16px; flex-wrap: wrap; }
+.company-h h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 7px; font-size: 12.5px; font-weight: 600;
+  background: var(--card-2); border: 1px solid var(--line); color: var(--text-2); }
+.chip i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+.file { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 16px 10px 28px; }
+.file + .file { border-top: 1px dashed var(--line); }
+.file-name { font-weight: 600; overflow-wrap: anywhere; }
+.file-time { font-size: 12.5px; color: var(--muted); }
+.sbadge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+.s-done { background: var(--green-bg); color: var(--green-text); }
+.s-incomplete { background: var(--amber-bg); color: var(--amber-text); }
+.s-error { background: var(--red-bg); color: var(--red-text); }
+.s-running { background: var(--blue-bg); color: var(--blue-text); }
+.s-unknown { background: var(--card-2); color: var(--muted); border: 1px solid var(--line); }
+.issues { grid-column: 1 / -1; display: grid; gap: 6px; margin-top: 2px; }
+.issue { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 9px 12px; border-radius: 10px;
+  background: var(--red-bg); font-size: 13.5px; }
+.issue.todo { background: var(--violet-bg); }
+.issue b { white-space: nowrap; }
+.issue .t { overflow-wrap: anywhere; color: var(--text); }
+.issue .hint { display: block; color: var(--text-2); font-size: 12.5px; margin-top: 2px; }
+.empty { padding: 36px 16px; text-align: center; color: var(--muted); }
+.empty .icon { width: 30px; height: 30px; margin-bottom: 8px; opacity: .7; }
+
+/* queue */
+.q { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--line); }
+.q:first-child { border-top: 0; }
+.q .q-n { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 12px; font-weight: 700;
+  background: var(--card-2); border: 1px solid var(--line); color: var(--muted); }
+.q.now .q-n { background: var(--blue-bg); color: var(--blue-text); border-color: transparent; }
+.q.skip .q-name { text-decoration: line-through; color: var(--muted); }
+.q-name { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.q-sub { font-size: 12px; color: var(--muted); }
+.btn.sm { min-height: 34px; padding: 0 12px; font-size: 13px; }
+.s-skipped { background: var(--card-2); color: var(--muted); border: 1px dashed var(--line-2); }
+
+/* gmail list */
+.switch { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; font-weight: 600; margin-left: auto; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .track { width: 42px; height: 24px; border-radius: 99px; background: var(--line-2); position: relative; transition: background .2s; flex: none; }
+.switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.switch input:checked + .track { background: var(--green); }
+.switch input:checked + .track::after { transform: translateX(18px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
+.g-add { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.g-add input { flex: 1; min-width: 0; min-height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--text); }
+.g-items { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px; }
+.g-item { display: inline-flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; border-radius: 9px; background: var(--card-2); border: 1px solid var(--line); font-size: 13px; font-weight: 600; }
+.g-item.found { border-color: color-mix(in srgb, var(--green) 45%, transparent); background: var(--green-bg); }
+.g-item small { color: var(--muted); font-weight: 500; }
+.g-item button { width: 26px; height: 26px; border: 0; border-radius: 7px; background: none; cursor: pointer; display: grid; place-items: center; color: var(--muted); }
+.g-item button:hover { background: var(--line); color: var(--text); }
+.g-status { display: flex; gap: 10px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-2); flex-wrap: wrap; }
+.g-recent { padding: 0 16px 12px; font-size: 13px; color: var(--text-2); display: grid; gap: 4px; }
+
+/* alerts */
+.alert { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 11px 16px; border-top: 1px solid var(--line); }
+.alert:first-child { border-top: 0; }
+.alert .a-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; }
+.alert .a-t { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.alert .a-m { color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+.alert .a-time { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.lv-error .a-ic { background: var(--red-bg); color: var(--red-text); }
+.lv-done .a-ic { background: var(--green-bg); color: var(--green-text); }
+.lv-info .a-ic { background: var(--blue-bg); color: var(--blue-text); }
+
+/* log */
+.log { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; overflow: auto; background: var(--bg-2); border-radius: 0 0 var(--radius) var(--radius); }
+.log.mini { max-height: 330px; }
+.log.full { height: calc(100dvh - 260px); min-height: 360px; }
+.ll { display: grid; grid-template-columns: 74px 1fr; gap: 8px; padding: 1px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ll .lt { color: var(--muted); }
+.ll.err { color: var(--red-text); background: color-mix(in srgb, var(--red) 7%, transparent); }
+.ll.ok { color: var(--green-text); }
+.ll.warn { color: var(--amber-text); }
+.ll.head { color: var(--blue-text); font-weight: 600; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.seg { display: inline-flex; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.seg button { border: 0; background: none; padding: 6px 12px; border-radius: 7px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); min-height: 32px; }
+.seg button[aria-pressed="true"] { background: var(--card); color: var(--text); box-shadow: var(--shadow); }
+.search { display: flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 38px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--card); color: var(--muted); }
+.search input { border: 0; background: none; outline: none; color: var(--text); min-width: 180px; }
+.check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+
+/* history */
+.chart-wrap { padding: 8px 16px 16px; }
+.chart { width: 100%; height: 230px; display: block; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 0 16px 12px; font-size: 13px; color: var(--text-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+.day { border-top: 1px solid var(--line); }
+.day:first-child { border-top: 0; }
+.day > button { width: 100%; display: grid; grid-template-columns: auto 1fr auto auto; gap: 14px; align-items: center; padding: 14px 16px;
+  border: 0; background: none; cursor: pointer; text-align: left; min-height: 56px; }
+.day > button:hover { background: var(--card-2); }
+.day .d-date { font-weight: 700; font-size: 15px; }
+.day .d-sub { color: var(--muted); font-size: 12.5px; }
+.chev { transition: transform .2s; color: var(--muted); }
+.day.open .chev { transform: rotate(180deg); }
+.day-body { display: none; padding: 0 16px 16px; }
+.day.open .day-body { display: block; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
+td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+
+/* toast */
+.toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 50; width: min(380px, calc(100vw - 32px)); }
+.toast { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; padding: 12px 14px; border-radius: 12px; background: var(--card);
+  border: 1px solid var(--line-2); box-shadow: 0 12px 32px rgba(0,0,0,.3); animation: tin .25s ease-out; }
+.toast .a-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; }
+@keyframes tin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 1280px) { .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 1180px) { .grid-main { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .topbar-in, main, .tabs { padding-left: 16px; padding-right: 16px; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .now { grid-template-columns: 1fr; } .now-side { text-align: left; }
+  .file { grid-template-columns: 1fr; padding-left: 16px; }
+  .day > button { grid-template-columns: 1fr auto; } .day .chips { grid-column: 1 / -1; }
+  .search input { min-width: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M7 3v18M17 3v18M2 8h5M2 16h5M17 8h5M17 16h5"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></symbol>
+  <symbol id="i-moonsleep" viewBox="0 0 24 24"><path d="M2 12h3M19 12h3"/><circle cx="12" cy="12" r="5"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><svg class="icon"><use href="#i-image"/></svg></div>
+      <div><h1>Post Automation</h1><small>Control room</small></div>
+    </div>
+    <span id="statusPill" class="status-pill st-off" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">Connect ho raha hai…</span></span>
+    <div class="profiles" id="profiles" aria-label="Chrome profiles"></div>
+    <div class="spacer"></div>
+    <div class="actions">
+      <button class="btn primary" id="btnStart" type="button"><svg class="icon"><use href="#i-play"/></svg><span>START</span></button>
+      <button class="btn warn" id="btnStop" type="button"><svg class="icon"><use href="#i-pause"/></svg><span>STOP / Pause</span></button>
+      <div class="menu" id="srvMenu">
+        <button class="btn icon-only" id="btnMenu" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Server options"><svg class="icon"><use href="#i-more"/></svg></button>
+        <div class="menu-list" role="menu">
+          <button type="button" role="menuitem" data-act="restart"><svg class="icon"><use href="#i-refresh"/></svg><span>Server restart<small>Naya code load — kaam ruka hua hona chahiye</small></span></button>
+          <button type="button" role="menuitem" data-act="shutdown" class="danger"><svg class="icon"><use href="#i-power"/></svg><span>Server band karo<small>Dobara: START_SERVER.bat</small></span></button>
+        </div>
+      </div>
+      <button class="btn icon-only ghost" id="btnTheme" type="button" aria-label="Light / dark theme"><svg class="icon"><use id="themeIcon" href="#i-sun"/></svg></button>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button class="tab" role="tab" id="t-today" aria-controls="v-today" aria-selected="true"><svg class="icon sm"><use href="#i-activity"/></svg>Aaj</button>
+    <button class="tab" role="tab" id="t-history" aria-controls="v-history" aria-selected="false"><svg class="icon sm"><use href="#i-cal"/></svg>History</button>
+    <button class="tab" role="tab" id="t-log" aria-controls="v-log" aria-selected="false"><svg class="icon sm"><use href="#i-term"/></svg>Live log</button>
+    <button class="tab" role="tab" id="t-alerts" aria-controls="v-alerts" aria-selected="false"><svg class="icon sm"><use href="#i-bell"/></svg>Alerts <span class="badge" id="alertBadge" hidden>0</span></button>
+  </nav>
+</header>
+
+<main>
+  <div class="banner" id="offline" hidden>
+    <svg class="icon"><use href="#i-power"/></svg>
+    <div><b>Server band hai.</b> <span>START_SERVER.bat chalao — yeh page khud dobara jud jayega.</span></div>
+  </div>
+
+  <!-- AAJ -->
+  <section class="view" id="v-today" role="tabpanel" aria-labelledby="t-today">
+    <div class="stack">
+      <div class="card now" id="now">
+        <div class="now-ic st-idle" id="nowIc"><svg class="icon"><use href="#i-moonsleep"/></svg></div>
+        <div>
+          <h2 id="nowTitle">—</h2>
+          <p id="nowSub"></p>
+          <div class="act" id="nowAct"></div>
+          <div class="progress" id="nowProg" hidden><i style="width:0"></i></div>
+        </div>
+        <div class="now-side"><div class="big num" id="nowTime">—</div><div class="muted" id="nowTimeLbl"></div>
+          <button class="btn sm danger" type="button" id="nowSkip" hidden style="margin-top:10px"><svg class="icon sm"><use href="#i-close"/></svg><span>Is file ko skip karo</span></button></div>
+      </div>
+
+      <div class="kpis" id="kpis"></div>
+
+      <div class="grid-main">
+        <div class="card">
+          <div class="card-h"><svg class="icon"><use href="#i-file"/></svg><h2>Aaj ki files</h2><span class="muted" id="todayDate"></span></div>
+          <div id="todayList"></div>
+        </div>
+        <div class="stack">
+          <div class="card" id="gmailCard">
+            <div class="card-h"><svg class="icon"><use href="#i-mail"/></svg><h2>Gmail list</h2>
+              <label class="switch"><input type="checkbox" id="gmailOn"><span class="track" aria-hidden="true"></span><span id="gmailOnLbl">OFF</span></label></div>
+            <div class="muted" style="padding:10px 16px 0">Jin companies ki file email par aani hai un ke naam do. ON ho to har 30 second Designer ki Gmail dekhi jayegi —
+              file aate hi "Edit with Google Docs" se khulegi aur posts khud banengi. Koi file ban rahi ho to scan us ke baad hota hai.</div>
+            <form class="g-add" id="gmailForm"><label class="sr" for="gmailName">Company naam</label>
+              <input id="gmailName" placeholder="Company naam (kai ho to comma se)" autocomplete="off">
+              <button class="btn" type="submit">Add</button></form>
+            <div class="g-items" id="gmailItems"></div>
+            <div class="g-recent" id="gmailRecent"></div>
+            <div class="g-status"><span id="gmailStatus" role="status">—</span><span class="spacer"></span>
+              <button class="btn sm" type="button" id="gmailScan"><svg class="icon sm"><use href="#i-refresh"/></svg>Abhi scan karo</button>
+              <button class="btn sm ghost" type="button" id="gmailClear">List khaali karo</button></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><svg class="icon"><use href="#i-layers"/></svg><h2>Line mein files</h2><span class="muted">jo khuli hain sab banengi</span></div>
+            <div id="queue"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><svg class="icon"><use href="#i-bell"/></svg><h2>Alerts</h2><button class="btn ghost muted" type="button" data-goto="alerts">Sab dekho</button></div>
+            <div id="alertsMini"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><svg class="icon"><use href="#i-term"/></svg><h2>Activity</h2><button class="btn ghost muted" type="button" data-goto="log">Poora log</button></div>
+            <div class="log mini" id="logMini" aria-live="off"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section class="view" id="v-history" role="tabpanel" aria-labelledby="t-history" hidden>
+    <div class="stack">
+      <div class="kpis" id="histKpis"></div>
+      <div class="card">
+        <div class="card-h"><svg class="icon"><use href="#i-cal"/></svg><h2>Roz ka kaam (aakhri 14 din)</h2><span class="muted">bar par mouse / tap = poori ginti</span></div>
+        <div class="chart-wrap"><svg class="chart" id="chart" role="img" aria-label="Daily images chart"></svg></div>
+        <div class="legend">
+          <span><i style="--c:var(--c-post)"></i>Posts</span><span><i style="--c:var(--c-story)"></i>Stories</span>
+          <span><i style="--c:var(--c-carousel)"></i>Carousel slides</span><span><i style="--c:var(--c-mockup)"></i>Mockups</span>
+          <span class="muted">Reels chart mein nahi (aap khud banate ho) — neeche table mein</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <label class="search"><svg class="icon sm"><use href="#i-search"/></svg><span class="sr">Company dhoondo</span>
+            <input id="histSearch" type="search" placeholder="Company dhoondo…" autocomplete="off"></label>
+          <span class="muted" id="histCount"></span>
+        </div>
+        <div id="days"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LOG -->
+  <section class="view" id="v-log" role="tabpanel" aria-labelledby="t-log" hidden>
+    <div class="card">
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Log filter">
+          <button type="button" data-lf="all" aria-pressed="true">Sab</button>
+          <button type="button" data-lf="issues" aria-pressed="false">Sirf masle</button>
+          <button type="button" data-lf="done" aria-pressed="false">Bani / Done</button>
+        </div>
+        <label class="search"><svg class="icon sm"><use href="#i-search"/></svg><span class="sr">Log mein dhoondo</span>
+          <input id="logSearch" type="search" placeholder="Log mein dhoondo…" autocomplete="off"></label>
+        <label class="check"><input type="checkbox" id="autoScroll" checked> Neeche chalta rahe</label>
+        <span class="spacer"></span><span class="muted" id="logCount"></span>
+      </div>
+      <div class="log full" id="logFull"></div>
+    </div>
+  </section>
+
+  <!-- ALERTS -->
+  <section class="view" id="v-alerts" role="tabpanel" aria-labelledby="t-alerts" hidden>
+    <div class="card">
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Alert filter">
+          <button type="button" data-af="all" aria-pressed="true">Sab</button>
+          <button type="button" data-af="error" aria-pressed="false">Masle</button>
+          <button type="button" data-af="done" aria-pressed="false">Mukammal</button>
+        </div>
+        <label class="check"><input type="checkbox" id="desktopNotif"> Desktop notification bhi</label>
+        <span class="spacer"></span><span class="muted">Windows popup pehle ki tarah aata rahega</span>
+      </div>
+      <div id="alertsFull"></div>
+    </div>
+  </section>
+</main>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const ico = (id, cls = "icon") => `<svg class="${cls}" aria-hidden="true"><use href="#i-${id}"/></svg>`;
+  const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+                  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+
+  const KINDS = [
+    { k: "post", label: "Posts", icon: "image", c: "var(--c-post)" },
+    { k: "story", label: "Stories", icon: "phone", c: "var(--c-story)" },
+    { k: "carousel", label: "Carousel slides", icon: "layers", c: "var(--c-carousel)" },
+    { k: "mockup", label: "Mockups", icon: "box", c: "var(--c-mockup)" },
+  ];
+  const STATUS = {
+    done: ["Poori", "s-done", "check"], incomplete: ["Adhoori", "s-incomplete", "alert"], error: ["Error", "s-error", "x"],
+    running: ["Ban rahi hai", "s-running", "activity"], unknown: ["Record nahi", "s-unknown", "info"],
+    skipped: ["Skip ki", "s-skipped", "close"],
+  };
+  const PROFILE_NAMES = { designer: "Designer", waseem: "Waseem", wajid: "Wajid", instagram: "Azhar (Insta)" };
+
+  let logSeq = 0, alertSeq = 0, logs = [], alerts = [], online = null, lastState = null, history = null, firstLoad = true;
+  let logFilter = "all", alertFilter = "all";
+
+  /* ---------- theme ---------- */
+  const applyTheme = t => { document.documentElement.dataset.theme = t; $("#themeIcon").setAttribute("href", t === "light" ? "#i-moon" : "#i-sun"); };
+  applyTheme(store.get("theme", matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));
+  $("#btnTheme").onclick = () => { const t = document.documentElement.dataset.theme === "light" ? "dark" : "light"; applyTheme(t); store.set("theme", t); if (history) renderChart(); };
+
+  /* ---------- tabs ---------- */
+  function showTab(name) {
+    $$(".tab").forEach(t => t.setAttribute("aria-selected", String(t.id === "t-" + name)));
+    $$(".view").forEach(v => v.hidden = v.id !== "v-" + name);
+    store.set("tab", name);
+    if (name === "history") loadHistory();
+    if (name === "alerts") { store.set("seenAlert", alertSeq); updateBadge(); }
+    if (name === "log") renderLogFull(true);
+  }
+  $$(".tab").forEach(t => t.onclick = () => showTab(t.id.slice(2)));
+  $$("[data-goto]").forEach(b => b.onclick = () => showTab(b.dataset.goto));
+  $(".tabs").addEventListener("keydown", e => {
+    if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    const tabs = $$(".tab"), i = tabs.indexOf(document.activeElement); if (i < 0) return;
+    const n = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length]; n.focus(); n.click();
+  });
+
+  /* ---------- helpers ---------- */
+  const fmtDur = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+    return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`; };
+  const fmtTime = t => t ? new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const dayName = d => { const dt = new Date(d + "T00:00:00"), today = new Date(); today.setHours(0,0,0,0);
+    const diff = Math.round((today - dt) / 864e5);
+    const label = dt.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    return diff === 0 ? "Aaj · " + label : diff === 1 ? "Kal · " + label : label; };
+  const sumImages = t => KINDS.reduce((a, k) => a + (t[k.k] || 0), 0);
+  const ONE = { post: "post", story: "story", carousel: "carousel slide", mockup: "mockup" };
+  const cnt = (n, k) => `${n} ${n === 1 ? ONE[k.k] : k.label.toLowerCase()}`;
+  function lineClass(text) {
+    if (/ERROR|✘|FAIL|nahi bani|ghalat|Traceback|limit/i.test(text)) return "err";
+    if (/✔|DONE:|download ho gayin|Image \d+ download:|Final images/i.test(text)) return "ok";
+    if (/⚠|STOP|RUK GAYA|PAUSE|Internet chala/i.test(text)) return "warn";
+    if (/^\s*\[\d+\/\d+\]|SAB FILES KHATAM|RESUME|START/i.test(text)) return "head";
+    return "";
+  }
+  const parseLine = l => { const m = /^\[(\d\d:\d\d:\d\d)\]\s?(.*)$/s.exec(l); return m ? [m[1], m[2]] : ["", l]; };
+  function hintFor(text) {
+    const t = text.toLowerCase();
+    if (t.includes("limit")) return "ChatGPT ki limit thi → START dobara dabao (sirf yeh banegi)";
+    if (/http|download|screenshot/.test(t)) return "Di hui image nahi mili → link check karo, ya image khud laga kar banao";
+    if (t.includes("attach")) return "Image attach nahi hui → START dobara dabao";
+    if (t.includes("samajh")) return "Doc mein is post ka heading / link check karo, phir START";
+    return "START dobara dabao (sirf baqi banegi), ya khud bana lo";
+  }
+
+  /* ---------- toasts ---------- */
+  function toast(a) {
+    const ic = a.level === "error" ? "alert" : a.level === "done" ? "check" : "info";
+    const el = document.createElement("div");
+    el.className = "toast lv-" + a.level;
+    el.innerHTML = `<div class="a-ic">${ico(ic)}</div><div><div class="a-t">${esc(a.title)}</div><div class="a-m">${esc(a.message)}</div></div>
+      <button class="btn ghost icon-only" type="button" aria-label="Band karo">${ico("close", "icon sm")}</button>`;
+    el.querySelector("button").onclick = () => el.remove();
+    $("#toasts").prepend(el);
+    setTimeout(() => el.remove(), a.level === "error" ? 9000 : 5000);
+    if ($("#desktopNotif").checked && "Notification" in window && Notification.permission === "granted") new Notification(a.title, { body: a.message });
+  }
+  function note(message, ok = true) { toast({ title: ok ? "Theek hai" : "Nahi hua", message, level: ok ? "done" : "error" }); }
+  $("#desktopNotif").checked = store.get("desktopNotif", false);
+  $("#desktopNotif").onchange = async e => {
+    if (e.target.checked && "Notification" in window && Notification.permission !== "granted") {
+      const p = await Notification.requestPermission(); if (p !== "granted") e.target.checked = false;
+    }
+    store.set("desktopNotif", e.target.checked);
+  };
+
+  /* ---------- actions ---------- */
+  async function act(what, btn) {
+    if (what === "shutdown" && !confirm("Server band karna hai? Dobara chalane ke liye START_SERVER.bat chalana hoga.")) return;
+    if (what === "restart" && !confirm("Server restart karein? (naya code load hoga)")) return;
+    btn && (btn.disabled = true);
+    try {
+      const r = await fetch("/api/action?do=" + what, { headers: { "X-Dashboard": "1" } });
+      const j = await r.json(); note(j.message, j.ok);
+      if (j.ok && what === "restart") waitRestart = Date.now();
+    } catch { note("Server se jawab nahi aaya", false); }
+    finally { btn && (btn.disabled = false); poll(); }
+  }
+  let waitRestart = 0;
+  $("#btnStart").onclick = e => act("start", e.currentTarget);
+  $("#btnStop").onclick = e => act("stop", e.currentTarget);
+  const menu = $("#srvMenu");
+  $("#btnMenu").onclick = e => { e.stopPropagation(); const o = menu.classList.toggle("open"); $("#btnMenu").setAttribute("aria-expanded", String(o)); };
+  document.addEventListener("click", () => { menu.classList.remove("open"); $("#btnMenu").setAttribute("aria-expanded", "false"); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { menu.classList.remove("open"); $("#btnMenu").setAttribute("aria-expanded", "false"); } });
+  $$(".menu-list [data-act]").forEach(b => b.onclick = () => act(b.dataset.act, b));
+
+  /* ---------- render: header ---------- */
+  function renderHeader(s) {
+    const pill = $("#statusPill");
+    let cls = "st-idle", text = "Khali — START ka intezar", pulse = false;
+    if (!s) { cls = "st-off"; text = "Server band hai"; }
+    else if (s.paused) { cls = "st-paused"; text = "Ruka hua (PAUSE) — START se wahin se"; }
+    else if (s.stopping) { cls = "st-paused"; text = "Ruk raha hai… current step khatam ho raha hai"; pulse = true; }
+    else if (s.busy) { cls = "st-running"; text = "Kaam chal raha hai"; pulse = true; }
+    pill.className = `status-pill ${cls}${pulse ? " pulse" : ""}`;
+    $("#statusText").textContent = text;
+    $("#profiles").innerHTML = s ? s.roles.map(r => { const on = s.connected.includes(r);
+      return `<span class="prof ${on ? "on" : "off"}" title="${on ? "Connected" : "Connected nahi"}"><span class="dot"></span>${esc(PROFILE_NAMES[r] || r)}<span class="sr">${on ? " connected" : " connected nahi"}</span></span>`; }).join("") : "";
+    $("#btnStart").disabled = !s || (s.busy && !s.paused && !s.stopping);
+    $("#btnStart").querySelector("span").textContent = s && s.paused ? "RESUME" : "START";
+    $("#btnStop").disabled = !s || !s.busy || s.paused || s.stopping;
+  }
+
+  function renderNow(st) {
+    const s = st && st.server, c = s && s.current, ic = $("#nowIc"), prog = $("#nowProg");
+    const last = logs.length ? parseLine(logs[logs.length - 1].line) : null;
+    let icon = "moonsleep", cls = "st-idle", title, sub = "", side = "", sideLbl = "";
+    if (!s) { cls = "st-off"; icon = "power"; title = "Server band hai"; sub = "START_SERVER.bat chalao"; }
+    else if (c && c.file) {
+      cls = s.paused ? "st-paused" : "st-running"; icon = s.paused ? "pause" : "activity";
+      title = (s.paused ? "Ruka hua: " : "Ban rahi hai: ") + c.file;
+      sub = `Company: ${c.company} · File ${c.i} / ${c.total}`;
+      side = fmtDur(Date.now() / 1000 - c.since); sideLbl = "is file par";
+    } else if (s.busy) { cls = s.paused ? "st-paused" : "st-running"; icon = "activity"; title = s.paused ? "Ruka hua" : "Tayyari ho rahi hai…"; sub = "Files prepare ho rahi hain"; }
+    else { title = "Abhi koi kaam nahi chal raha"; sub = "Designer profile mein Google Docs kholo aur START dabao"; side = fmtDur(s.uptime); sideLbl = "server chal raha hai"; }
+    ic.className = "now-ic " + cls; ic.innerHTML = ico(icon);
+    $("#nowTitle").textContent = title; $("#nowSub").textContent = sub;
+    $("#nowAct").textContent = last && s ? `${last[0]}  ${last[1].trim()}` : "";
+    $("#nowTime").textContent = side; $("#nowTimeLbl").textContent = sideLbl;
+    prog.hidden = !(c && c.file);
+    const sk = $("#nowSkip");
+    sk.hidden = !(c && c.file);
+    if (c && c.file) {
+      sk.querySelector("span").textContent = s.current_skip ? "Skip wapis lao" : "Is file ko skip karo";
+      sk.classList.toggle("danger", !s.current_skip);
+      sk.onclick = () => skipFile(c.file, s.current_skip ? "unskip" : "skip", true, sk);
+    }
+    if (c && c.file) prog.firstElementChild.style.width = Math.round(((c.i - 1) / Math.max(1, c.total)) * 100) + "%";
+  }
+
+  async function skipFile(f, d, now, btn) {
+    if (d === "skip" && !confirm(now ? `"${f}" abhi ban rahi hai. Skip karein? Jo images ban chuki woh mehfooz rahengi, baqi nahi banengi.` : `"${f}" skip karein? Yeh is dafa nahi banegi.`)) return;
+    if (btn) btn.disabled = true;
+    try { const r = await fetch(`/api/action?do=${d}&file=${encodeURIComponent(f)}`, { headers: { "X-Dashboard": "1" } }); const j = await r.json(); note(j.message, j.ok); }
+    catch { note("Server se jawab nahi aaya", false); }
+    if (btn) btn.disabled = false;
+    openDocsAt = 0; poll();
+  }
+  let openDocs = null, openDocsAt = 0;
+  async function loadOpenDocs() {  // START se pehle: Designer mein khuli Google Docs
+    if (Date.now() - openDocsAt < 8000) return;
+    openDocsAt = Date.now();
+    try { openDocs = await (await fetch("/api/docs", { cache: "no-store" })).json(); } catch { openDocs = null; }
+    if (lastState) renderQueue(lastState.server);
+  }
+  function renderQueue(s) {
+    const el = $("#queue"), c = s && s.current, q = (s && s.queue) || [];
+    if (s && !s.busy && !c?.file && !q.length) {
+      loadOpenDocs();
+      const docs = openDocs && openDocs.available ? openDocs.docs : null;
+      if (docs && docs.length) {
+        const todo = docs.filter(d => !d.done);
+        el.innerHTML = `<div class="q" style="border-top:0"><span></span><div class="q-sub">START dabane par yeh <b>${todo.filter(d => !d.skip).length}</b> files banengi (right wali tab pehle). Jo nahi banani us par Skip.</div><span></span></div>`
+          + docs.map((d, k) => `<div class="q ${d.skip || d.done ? "skip" : ""}"><span class="q-n num">${k + 1}</span>
+            <div><div class="q-name">${esc(d.file)}</div><div class="q-sub">${d.done ? "Pehle ho chuki — nahi banegi" : d.skip ? "Skip hogi — nahi banegi" : "START par banegi"}</div></div>
+            ${d.done ? "<span></span>" : `<button class="btn sm ${d.skip ? "" : "danger"}" type="button" data-skip="${esc(d.file)}" data-do="${d.skip ? "unskip" : "skip"}">${d.skip ? "Wapis lao" : "Skip"}</button>`}</div>`).join("");
+        $$("[data-skip]", el).forEach(b => b.onclick = () => skipFile(b.dataset.skip, b.dataset.do, false, b));
+        return;
+      }
+    }
+    if (!s || (!c?.file && !q.length)) {
+      el.innerHTML = `<div class="empty">${ico("layers")}<div>Abhi line mein koi file nahi</div>
+        <div class="muted">${s && s.busy ? "Files tayyar ho rahi hain…" : "Designer profile mein Google Docs kholo — yahan list aa jayegi. Sab khuli files banengi; jo nahi banani us par <b>Skip</b>."}</div></div>`;
+      return;
+    }
+    const row = (f, n, now, skip) => `<div class="q ${now ? "now" : ""} ${skip ? "skip" : ""}"><span class="q-n num">${n}</span>
+      <div><div class="q-name">${esc(f)}</div><div class="q-sub">${now ? (skip ? "Skip ho rahi hai — agle safe point par chhod degi" : "Abhi ban rahi hai") : (skip ? "Skip hogi — nahi banegi" : "Line mein — banegi")}</div></div>
+      <button class="btn sm ${skip ? "" : "danger"}" type="button" data-skip="${esc(f)}" data-do="${skip ? "unskip" : "skip"}">${skip ? "Wapis lao" : "Skip"}</button></div>`;
+    el.innerHTML = (c?.file ? row(c.file, c.i, true, s.current_skip) : "") + q.map((x, k) => row(x.file, (c?.i || 0) + k + 1, false, x.skip)).join("");
+    $$("[data-skip]", el).forEach(b => b.onclick = () => skipFile(b.dataset.skip, b.dataset.do, c && c.file === b.dataset.skip, b));
+  }
+
+  function kpiHtml(t, scope) {
+    const imgs = sumImages(t);
+    return KINDS.map(k => `<div class="card kpi" style="--k:${k.c}"><div class="lbl">${ico(k.icon, "icon sm")}${k.label}</div>
+        <div class="val num">${t[k.k] || 0}</div><div class="sub">${scope}</div></div>`).join("")
+      + `<div class="card kpi" style="--k:var(--green)"><div class="lbl">${ico("check", "icon sm")}Files poori</div>
+        <div class="val num">${t.done || 0}<span class="muted"> / ${t.files || 0}</span></div><div class="sub">${imgs} images total</div></div>`
+      + `<div class="card kpi" style="--k:var(--c-reel)"><div class="lbl">${ico("film", "icon sm")}Reels (aap banao)</div>
+        <div class="val num">${t.reels || 0}</div><div class="sub">automation nahi banati</div></div>`
+      + `<div class="card kpi" style="--k:${t.issues ? "var(--red)" : "var(--line-2)"}"><div class="lbl">${ico("alert", "icon sm")}Masle</div>
+        <div class="val num" style="color:${t.issues ? "var(--red-text)" : "inherit"}">${t.issues || 0}</div><div class="sub">${t.issues ? "neeche file mein dekho" : "koi masla nahi"}</div></div>`;
+  }
+
+  const reelChip = n => n ? `<span class="chip" style="--c:var(--c-reel)"><i></i>${n} reel${n > 1 ? "s" : ""} (aap)</span>` : "";
+  function fileHtml(f) {
+    const [lbl, cls, ic] = STATUS[f.status] || STATUS.unknown;
+    const chips = (KINDS.filter(k => f.counts[k.k]).map(k => `<span class="chip" style="--c:${k.c}"><i></i>${cnt(f.counts[k.k], k)}</span>`).join("")
+      || `<span class="chip">0 images</span>`) + reelChip(f.reels);
+    const time = f.first ? `${fmtTime(f.first)}${f.last && f.last !== f.first ? " – " + fmtTime(f.last) : ""}` : "";
+    const issues = f.issues.map(i => `<div class="issue">${ico("x", "icon sm")}<div><b>${esc(i.type)}</b> · <span class="t">${esc(i.text)}</span><span class="hint">→ ${esc(hintFor(i.type + " " + i.text))}</span></div></div>`)
+      .concat(f.todo.map(i => `<div class="issue todo">${ico("info", "icon sm")}<div><b>${esc(i.type)}</b> · <span class="t">${esc(i.text)}</span></div></div>`)).join("");
+    return `<div class="file"><div><div class="file-name">${esc(f.file)}</div><div class="file-time">${time}${f.final_dir ? " · " + esc(f.final_dir) : ""}</div></div>
+      <div class="chips">${chips}</div><span class="sbadge ${cls}">${ico(ic, "icon sm")}${lbl}</span>${issues ? `<div class="issues">${issues}</div>` : ""}</div>`;
+  }
+
+  function renderToday(today) {
+    $("#kpis").innerHTML = kpiHtml(today.totals, "aaj");
+    $("#todayDate").textContent = dayName(today.date);
+    $("#todayList").innerHTML = today.companies.length ? today.companies.map(c => `<div class="company">
+        <div class="company-h"><h3>${esc(c.company)}</h3><div class="chips">${KINDS.filter(k => c.totals[k.k]).map(k =>
+          `<span class="chip" style="--c:${k.c}"><i></i>${cnt(c.totals[k.k], k)}</span>`).join("")}${reelChip(c.totals.reels)}</div>
+          <span class="muted" style="margin-left:auto">${c.totals.done}/${c.totals.files} file poori</span></div>
+        ${c.files.map(fileHtml).join("")}</div>`).join("")
+      : `<div class="empty">${ico("image")}<div>Aaj abhi koi image nahi bani.</div><div class="muted">START dabao — banti hi yahan nazar aayengi.</div></div>`;
+  }
+
+  /* ---------- alerts ---------- */
+  function alertHtml(a) {
+    const ic = a.level === "error" ? "alert" : a.level === "done" ? "check" : "info";
+    return `<div class="alert lv-${a.level}"><div class="a-ic">${ico(ic, "icon sm")}</div><div>
+      <div class="a-t">${esc(a.title)}</div><div class="a-m">${esc(a.message)}</div><div class="a-time">${esc(a.date)} ${esc(a.time)}</div></div></div>`;
+  }
+  function renderAlerts() {
+    const recent = alerts.slice().reverse();
+    $("#alertsMini").innerHTML = recent.length ? recent.slice(0, 5).map(alertHtml).join("")
+      : `<div class="empty">${ico("bell")}<div>Koi alert nahi</div></div>`;
+    const list = recent.filter(a => alertFilter === "all" || a.level === alertFilter);
+    $("#alertsFull").innerHTML = list.length ? list.map(alertHtml).join("") : `<div class="empty">${ico("bell")}<div>Is filter mein koi alert nahi</div></div>`;
+    updateBadge();
+  }
+  function updateBadge() {
+    const seen = store.get("seenAlert", 0), n = alerts.filter(a => a.id > seen && a.level === "error").length, b = $("#alertBadge");
+    if ($("#t-alerts").getAttribute("aria-selected") === "true") { store.set("seenAlert", alertSeq); b.hidden = true; return; }
+    b.hidden = !n; b.textContent = n; b.setAttribute("aria-label", `${n} naye masle`);
+  }
+  $$("[data-af]").forEach(b => b.onclick = () => { alertFilter = b.dataset.af; $$("[data-af]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); renderAlerts(); });
+
+  /* ---------- log ---------- */
+  const lineHtml = l => { const [t, m] = parseLine(l.line); return `<div class="ll ${lineClass(m)}"><span class="lt">${t}</span><span>${esc(m)}</span></div>`; };
+  function renderLogMini() { const el = $("#logMini"); el.innerHTML = logs.slice(-40).map(lineHtml).join("") || `<div class="empty">Abhi koi activity nahi</div>`; el.scrollTop = el.scrollHeight; }
+  function renderLogFull(force) {
+    if (!force && $("#v-log").hidden) return;
+    const q = $("#logSearch").value.trim().toLowerCase();
+    const list = logs.filter(l => { const c = lineClass(l.line);
+      if (logFilter === "issues" && !(c === "err" || c === "warn")) return false;
+      if (logFilter === "done" && c !== "ok") return false;
+      return !q || l.line.toLowerCase().includes(q); });
+    const el = $("#logFull"); el.innerHTML = list.map(lineHtml).join("") || `<div class="empty">Kuch nahi mila</div>`;
+    $("#logCount").textContent = `${list.length} lines`;
+    if ($("#autoScroll").checked) el.scrollTop = el.scrollHeight;
+  }
+  $$("[data-lf]").forEach(b => b.onclick = () => { logFilter = b.dataset.lf; $$("[data-lf]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); renderLogFull(true); });
+  let logT; $("#logSearch").oninput = () => { clearTimeout(logT); logT = setTimeout(() => renderLogFull(true), 200); };
+
+  /* ---------- history ---------- */
+  async function loadHistory() {
+    try { history = await (await fetch("/api/history")).json(); renderHistory(); }
+    catch { if (!history) $("#days").innerHTML = `<div class="empty">${ico("alert")}<div>History load nahi hui — server band?</div></div>`; }
+  }
+  function renderHistory() {
+    if (!history) return;
+    const all = history.reduce((t, d) => { KINDS.forEach(k => t[k.k] += d.totals[k.k] || 0); t.files += d.totals.files; t.done += d.totals.done; t.issues += d.totals.issues; t.reels += d.totals.reels || 0; return t; },
+      { post: 0, story: 0, carousel: 0, mockup: 0, files: 0, done: 0, issues: 0, reels: 0 });
+    $("#histKpis").innerHTML = kpiHtml(all, `${history.length} din ka record`);
+    renderChart(); renderDays();
+  }
+  function renderChart() {
+    const svg = $("#chart"), days = (history || []).slice(0, 14).reverse();
+    if (!days.length) { svg.innerHTML = ""; return; }
+    const W = svg.clientWidth || 800, H = 230, pl = 34, pb = 26, pt = 18, cw = (W - pl - 8) / days.length;
+    const max = Math.max(4, ...days.map(d => sumImages(d.totals)));
+    const step = Math.ceil(max / 4), top = step * 4, y = v => pt + (H - pt - pb) * (1 - v / top);
+    const css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
+    let g = "";
+    for (let i = 0; i <= 4; i++) { const v = step * i;
+      g += `<line x1="${pl}" x2="${W - 8}" y1="${y(v)}" y2="${y(v)}" stroke="${col("--line")}" stroke-width="1"/>
+            <text x="${pl - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="${col("--muted")}" font-family="Fira Code, monospace">${v}</text>`; }
+    days.forEach((d, i) => {
+      const w = Math.min(cw * 0.64, 56), x = pl + i * cw + (cw - w) / 2; let acc = 0;
+      const tip = `${d.date}: ` + KINDS.map(k => `${d.totals[k.k] || 0} ${k.label.toLowerCase()}`).join(", ");
+      g += `<g tabindex="0" role="img" aria-label="${esc(tip)}"><title>${esc(tip)}</title>`;
+      KINDS.forEach(k => { const v = d.totals[k.k] || 0; if (!v) return;
+        const y1 = y(acc + v), h = y(acc) - y1; acc += v;
+        g += `<rect x="${x}" y="${y1}" width="${w}" height="${Math.max(h - 1, 1)}" rx="3" fill="${col("--c-" + k.k)}"/>`; });
+      const tot = sumImages(d.totals);
+      if (tot) g += `<text x="${x + w / 2}" y="${y(tot) - 5}" text-anchor="middle" font-size="11" font-weight="600" fill="${col("--text-2")}" font-family="Fira Code, monospace">${tot}</text>`;
+      const dt = new Date(d.date + "T00:00:00");
+      g += `<text x="${x + w / 2}" y="${H - 8}" text-anchor="middle" font-size="11" fill="${col("--muted")}">${dt.getDate()}/${dt.getMonth() + 1}</text></g>`;
+    });
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = g;
+  }
+  const openDays = new Set(store.get("openDays", []));
+  function renderDays() {
+    const q = $("#histSearch").value.trim().toLowerCase();
+    const days = history.map(d => ({ ...d, companies: d.companies.filter(c => !q || c.company.toLowerCase().includes(q) || c.files.some(f => f.file.toLowerCase().includes(q))) }))
+      .filter(d => d.companies.length);
+    if (!openDays.size && days[0]) openDays.add(days[0].date);
+    $("#histCount").textContent = `${days.length} din`;
+    $("#days").innerHTML = days.length ? days.map(d => {
+      const t = q ? d.companies.reduce((a, c) => { KINDS.forEach(k => a[k.k] += c.totals[k.k]); a.files += c.totals.files; a.reels += c.totals.reels || 0; return a; }, { post: 0, story: 0, carousel: 0, mockup: 0, files: 0, reels: 0 }) : d.totals;
+      return `<div class="day ${openDays.has(d.date) ? "open" : ""}" data-day="${d.date}">
+        <button type="button" aria-expanded="${openDays.has(d.date)}"><div><div class="d-date">${esc(dayName(d.date))}</div>
+          <div class="d-sub">${d.companies.length} companies · ${t.files} files · ${sumImages(t)} images</div></div>
+          <div class="chips">${KINDS.filter(k => t[k.k]).map(k => `<span class="chip" style="--c:${k.c}"><i></i>${cnt(t[k.k], k)}</span>`).join("")}${reelChip(t.reels)}</div>
+          ${d.totals.issues && !q ? `<span class="sbadge s-incomplete">${ico("alert", "icon sm")}${d.totals.issues} masle</span>` : "<span></span>"}
+          <svg class="icon chev" aria-hidden="true"><use href="#i-chev"/></svg></button>
+        <div class="day-body"><div class="tbl-wrap"><table><thead><tr><th>Company / file</th>${KINDS.map(k => `<th class="n">${k.label}</th>`).join("")}<th class="n">Reels (aap)</th><th>Hal</th></tr></thead><tbody>
+          ${d.companies.map(c => `<tr><td><b>${esc(c.company)}</b></td>${KINDS.map(k => `<td class="n"><b>${c.totals[k.k] || "–"}</b></td>`).join("")}<td class="n"><b>${c.totals.reels || "–"}</b></td><td>${c.totals.done}/${c.totals.files} poori</td></tr>`
+            + c.files.map(f => { const [lbl, cls] = STATUS[f.status] || STATUS.unknown;
+              return `<tr class="sub"><td>${esc(f.file)}${f.first ? ` <span class="muted">· ${fmtTime(f.first)}</span>` : ""}</td>${KINDS.map(k => `<td class="n">${f.counts[k.k] || "–"}</td>`).join("")}<td class="n">${f.reels || "–"}</td>
+                <td><span class="sbadge ${cls}">${lbl}</span>${f.issues.length ? ` <span class="muted">${f.issues.length} masle</span>` : ""}</td></tr>`; }).join("")).join("")}
+        </tbody></table></div></div></div>`; }).join("")
+      : `<div class="empty">${ico("search")}<div>Kuch nahi mila</div></div>`;
+    $$("#days .day > button").forEach(b => b.onclick = () => {
+      const d = b.parentElement, open = d.classList.toggle("open"); b.setAttribute("aria-expanded", String(open));
+      open ? openDays.add(d.dataset.day) : openDays.delete(d.dataset.day); store.set("openDays", [...openDays]);
+    });
+  }
+  let histT; $("#histSearch").oninput = () => { clearTimeout(histT); histT = setTimeout(() => history && renderDays(), 200); };
+  let rsT; addEventListener("resize", () => { clearTimeout(rsT); rsT = setTimeout(() => history && renderChart(), 150); });
+
+  /* ---------- Gmail list ---------- */
+  async function gmailAct(params, btn) {
+    if (btn) btn.disabled = true;
+    try { const r = await fetch("/api/action?" + new URLSearchParams(params), { headers: { "X-Dashboard": "1" } }); const j = await r.json(); note(j.message, j.ok); }
+    catch { note("Server se jawab nahi aaya", false); }
+    if (btn) btn.disabled = false;
+    loadGmail();
+  }
+  async function loadGmail() {
+    let g;
+    try { g = await (await fetch("/api/gmail", { cache: "no-store" })).json(); } catch { return; }
+    $("#gmailOn").checked = g.enabled; $("#gmailOnLbl").textContent = g.enabled ? "ON" : "OFF";
+    $("#gmailItems").innerHTML = g.items.length ? g.items.map(it => {
+      const f = (it.found || []).slice(-1)[0];
+      return `<span class="g-item ${f ? "found" : ""}">${esc(it.name)} <small>${f ? "khuli " + esc(f.at.slice(11, 16)) : "intezar"}</small>
+        <button type="button" data-grm="${esc(it.name)}" aria-label="${esc(it.name)} list se hatao">${ico("close", "icon sm")}</button></span>`; }).join("")
+      : `<span class="muted">List khaali — upar company ka naam add karo</span>`;
+    $$("[data-grm]").forEach(b => b.onclick = () => gmailAct({ do: "gmail_remove", name: b.dataset.grm }, b));
+    $("#gmailRecent").innerHTML = g.recent.slice(0, 5).map(r => `<div>${ico(r.note ? "info" : "check", "icon sm")} ${esc(r.file)} <span class="muted">· ${esc(r.at.slice(5, 16))}${r.note ? " · " + esc(r.note) : ""}</span></div>`).join("");
+    const st = g.status || {};
+    $("#gmailStatus").textContent = (st.busy ? "Scan ho raha hai… " : "") + (st.message || "") + (st.last_scan ? ` · aakhri scan ${st.last_scan.slice(11, 16)}` : "");
+  }
+  $("#gmailForm").onsubmit = e => { e.preventDefault(); const n = $("#gmailName").value.trim(); if (!n) return;
+    $("#gmailName").value = ""; gmailAct({ do: "gmail_add", name: n }); };
+  $("#gmailOn").onchange = e => gmailAct({ do: "gmail_toggle", on: e.target.checked ? "1" : "0" });
+  $("#gmailScan").onclick = e => gmailAct({ do: "gmail_scan" }, e.currentTarget);
+  $("#gmailClear").onclick = e => { if (confirm("Gmail list khaali karein?")) gmailAct({ do: "gmail_clear" }, e.currentTarget); };
+  loadGmail(); setInterval(() => online && loadGmail(), 5000);
+
+  /* ---------- polling ---------- */
+  async function poll() {
+    try {
+      const r = await fetch(`/api/state?log=${logSeq}&alert=${alertSeq}`, { cache: "no-store" });
+      const st = await r.json();
+      if (st.log_seq < logSeq) { logs = []; logSeq = 0; alerts = []; alertSeq = 0; return poll(); } // server restart hua
+      if (online === false) note(waitRestart ? "Server wapis aa gaya" : "Server se dobara jud gaya");
+      online = true; waitRestart = 0; $("#offline").hidden = true;
+      if (st.log.length) { logs = logs.concat(st.log).slice(-1500); logSeq = st.log_seq; renderLogMini(); renderLogFull(); }
+      if (st.alerts.length) { if (!firstLoad) st.alerts.forEach(toast); alerts = alerts.concat(st.alerts).slice(-300); alertSeq = st.alert_seq; renderAlerts(); }
+      else if (firstLoad) renderAlerts();
+      lastState = st; renderHeader(st.server); renderNow(st); renderQueue(st.server); renderToday(st.today);
+      const prevDone = lastDone; lastDone = st.today.totals.done + sumImages(st.today.totals);
+      if (prevDone !== null && prevDone !== lastDone && !$("#v-history").hidden) loadHistory();
+      firstLoad = false;
+    } catch {
+      if (online !== false) { online = false; $("#offline").hidden = false; renderHeader(null); renderNow(null); renderQueue(null); }
+    }
+  }
+  let lastDone = null;
+  poll(); setInterval(poll, 2000);
+  setInterval(() => lastState && renderNow(lastState), 1000);
+  const urlTab = new URLSearchParams(location.search).get("tab");
+  showTab(["today", "history", "log", "alerts"].includes(urlTab) ? urlTab : store.get("tab", "today"));
+})();
+</script>
+</body>
+</html>

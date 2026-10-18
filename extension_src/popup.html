@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px "Segoe UI", sans-serif; width: 380px; margin: 0; padding: 12px; background: #fff; color: #111; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  .st { padding: 6px 8px; border-radius: 6px; margin-bottom: 8px; font-weight: 600; }
+  .ok { background: #e6f4ea; color: #137333; }
+  .bad { background: #fce8e6; color: #a50e0e; }
+  button { width: 100%; padding: 10px; font-size: 16px; font-weight: 700; border: 0; border-radius: 6px;
+           background: #1a7f37; color: #fff; cursor: pointer; }
+  button:disabled { background: #999; cursor: default; }
+  .controls { display: flex; gap: 8px; }
+  .controls button { min-height: 44px; }
+  #stop { background: #a50e0e; }
+  #stop:disabled { background: #999; }
+  button:focus-visible { outline: 3px solid #174ea6; outline-offset: 2px; }
+  #runState { margin: 8px 0; line-height: 1.45; }
+  #error { color: #a50e0e; }
+  #log { margin-top: 8px; height: 260px; overflow: auto; background: #111; color: #ddd;
+         font: 11px Consolas, monospace; padding: 6px; white-space: pre-wrap; border-radius: 6px; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+  <h1 id="title">Post Automation</h1>
+  <div id="status" class="st bad">...</div>
+  <div id="designerOnly" class="hide">
+    <div class="controls">
+      <button id="start" type="button">START</button>
+      <button id="stop" type="button" disabled>STOP / PAUSE</button>
+    </div>
+    <p id="runState" role="status" aria-live="polite">Run shuru karne ke liye START.</p>
+    <p id="error" role="alert" hidden></p>
+    <div id="log"></div>
+  </div>
+  <p id="note" class="hide">Is profile mein kuch nahi karna — bas yeh Chrome khula rehna chahiye.</p>
+  <script src="role.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
