@@ -214,7 +214,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Mockup 2 (4:5):", events[0][1])
             self.assertIn("Mockup 2 (4:5):", events[2][1])
             self.assertNotIn("Mockup 1 (4:5):", events[2][1])
-            self.assertEqual(len(list(final.glob("*.png"))), 2)
+            self.assertEqual(len(list(final.rglob("*.png"))), 2)
             # Downloads mein SIRF ChatGPT images — content/records Output mein
             self.assertEqual(sorted(p.suffix for p in final.iterdir()), [".png", ".png"])
 
@@ -275,7 +275,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                     await server.generate_and_download(chat, "cid", "Example", designs, work, summary)
                 except Exception as e:
                     error = e
-            saved = {p.stem: p.read_text() for p in final.glob("*.png")}
+            saved = {p.stem: p.read_text() for p in final.rglob("*.png")}
             return saved, summary, error
 
     async def test_missing_image_does_not_shift_or_stop_others(self):
@@ -296,7 +296,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "wait_for_images", side_effect=ready),                  patch.object(server, "download_generated", side_effect=download),                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))),                  patch.object(server, "final_dir", return_value=final),                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Example", designs, work, {})
             self.assertEqual(chat.send.await_count, 1)  # teeno posts ek hi message
-            self.assertEqual({p.stem: p.read_text() for p in final.glob("*.png")},
+            self.assertEqual({p.stem: p.read_text() for p in final.rglob("*.png")},
                              {"Post 1": "a", "Post 2": "b", "Post 3": "c"})
 
     async def test_carousel_all_slides_one_message_missing_slides_continue_same_carousel(self):
@@ -330,7 +330,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
     async def test_ten_posts_go_in_sets_of_three(self):
         designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 11)]
         sends = []
-        with patch.dict(server.CFG, {"batch_mode": True, "max_posts_per_message": 3}):
+        with patch.dict(server.CFG, {"posts_per_pass": 99, "batch_mode": True, "max_posts_per_message": 3}):
             saved, summary, error = await self._run_capture(
                 designs, [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["10"]], sends)
         self.assertIsNone(error)
@@ -343,7 +343,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
     async def test_big_file_rests_and_refreshes_between_sets(self):
         designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 8)]
         sends = []
-        with patch.dict(server.CFG, {"batch_mode": True, "max_posts_per_message": 3, "split_posts_from": 4,
+        with patch.dict(server.CFG, {"posts_per_pass": 99, "batch_mode": True, "max_posts_per_message": 3, "split_posts_from": 4,
                                      "rest_after_images": 4, "rest_between_sets_minutes": 3}):
             saved, summary, error = await self._run_capture(designs, [["1", "2", "3"], ["4", "5", "6"], ["7"]], sends)
         self.assertEqual(len(saved), 7)
@@ -365,10 +365,21 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         rest.assert_awaited_once()
         self.assertEqual(rest.await_args.args[0], 1)  # carousel se pehle 1 minute
 
+    async def test_big_file_makes_only_first_set_per_pass(self):
+        designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 8)]
+        sends = []
+        with patch.dict(server.CFG, {"batch_mode": True, "posts_per_pass": 3}):
+            saved, summary, error = await self._run_capture(designs, [["1", "2", "3"]], sends)
+        self.assertIsNone(error)
+        self.assertEqual(len(sends), 1)  # sirf set 1-3 is dafa
+        self.assertEqual(len(saved), 3)
+        self.assertEqual(summary["part"], "1-3")
+        self.assertEqual(summary["parts_left"], 1)  # 4-7 baad mein
+
     async def test_five_posts_still_one_message(self):
         designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 6)]
         sends = []
-        with patch.dict(server.CFG, {"batch_mode": True, "max_posts_per_message": 3, "split_posts_from": 6}):
+        with patch.dict(server.CFG, {"posts_per_pass": 99, "batch_mode": True, "max_posts_per_message": 3, "split_posts_from": 6}):
             saved, summary, error = await self._run_capture(designs, [["1", "2", "3", "4", "5"]], sends)
         self.assertEqual(len(sends), 1)
         self.assertEqual(len(saved), 5)
@@ -390,7 +401,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         ig["ig_shot"] = [Path("ig.png")]
         designs.append(ig)
         sends = []
-        with patch.dict(server.CFG, {"batch_mode": True, "split_posts_from": 10}):
+        with patch.dict(server.CFG, {"posts_per_pass": 99, "batch_mode": True, "split_posts_from": 10}):
             # batch (Instagram post bhi isi mein): Post 1 ki image 2 dafa (Post 2 ki jagah) -> sirf Post 2 alag message
             saved, summary, _ = await self._run_capture(designs, [["a", "a", "c", "ig"], ["b"]], sends)
         self.assertEqual(saved, {"Post 1": "a", "Post 2": "b", "Post 3": "c", "Post 4": "ig"})
@@ -419,7 +430,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Example", designs, work, summary)
-            return {p.stem: p.read_text() for p in final.glob("*.png")}, summary, None
+            return {p.stem: p.read_text() for p in final.rglob("*.png")}, summary, None
 
     async def test_product_photo_attached_to_every_mockup(self):
         with work_directory() as tmp:
@@ -539,7 +550,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                 await server.generate_and_download(chat, "cid", "Example", designs, work, {"doc_id": "doc9"})
             (only,) = chat.send.await_args_list                    # sirf Post 3 bheji gayi
             self.assertIn("Post 3 (4:5)", only.args[0])
-            self.assertEqual({p.stem: p.read_text() for p in final.glob("*.png")},
+            self.assertEqual({p.stem: p.read_text() for p in final.rglob("*.png")},
                              {"Post 1": "p1", "Post 2": "p2", "Post 3": "p3"})
             self.assertIn("Post 3 (4:5)", server.load_progress()["doc9"])  # nayi bhi yaad
 
@@ -553,7 +564,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
             prod["product_path"] = product
             posts = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in (2, 3)]
             chat, ready, download = self._harness([["m1", "m2"], ["p2", "p3"]])
-            with patch.dict(server.CFG, {"mockup_companies": ["wear wood"], "batch_mode": True}), \
+            with patch.dict(server.CFG, {"posts_per_pass": 99, "mockup_companies": ["wear wood"], "batch_mode": True}), \
                  patch.object(server, "style_refs", return_value=[]), \
                  patch.object(server, "image_file_ids", return_value=[]), \
                  patch.object(server, "page_image_refs", new=AsyncMock(return_value=[])), \
@@ -570,7 +581,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mock_msg.args[1], [product])
             self.assertIn("Post 1 (4:5)", posts_msg.args[0]); self.assertIn("Post 2 (4:5)", posts_msg.args[0])
             self.assertIn("Create these 2 posts in my branding", posts_msg.args[0])
-            self.assertEqual({p.stem: p.read_text() for p in final.glob("*.png")},
+            self.assertEqual({p.stem: p.read_text() for p in final.rglob("*.png")},
                              {"Mockup 1": "m1", "Mockup 2": "m2", "Post 1": "p2", "Post 2": "p3"})
 
     async def test_default_each_post_separate_message(self):
@@ -1123,3 +1134,23 @@ def setUpModule():  # ChatGPT ke aaram (minute) tests mein fauran
 
 def tearDownModule():
     _rest_patch.stop()
+
+
+class FileSetsTests(unittest.TestCase):
+    def _o(self, kind, name):
+        return {"type": kind, "name": name, "d": server.new_design(kind, name, "x")}
+
+    def test_ten_posts_with_stories_in_three_sets(self):
+        outs = []
+        for n in range(1, 11):
+            outs.append(self._o("post", f"Post {n}"))
+            if n in (3, 6):
+                outs.append(self._o("story", f"Story {n}"))
+        sets = server.file_sets(outs, per=3)
+        self.assertEqual([l for l, _ in sets], ["1-3", "4-6", "7-10"])
+        self.assertEqual([o["name"] for o in sets[0][1]], ["Post 1", "Post 2", "Post 3", "Story 3"])
+        self.assertEqual(len(sets[2][1]), 4)
+
+    def test_regular_file_not_split(self):
+        outs = [self._o("post", f"P{n}") for n in (1, 2, 3)] + [self._o("story", "S")]
+        self.assertEqual(server.file_sets(outs, per=3)[0][0], None)

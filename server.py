@@ -2225,6 +2225,44 @@ def drop_duplicate(o, outs):
     return False
 
 
+def file_sets(outs, per=None):
+    """3 se zyada posts wali file -> sets: [("1-3", outs), ("4-6", outs), ("7-10", outs)].
+    Carousel = 1 post (saari slides ek set mein). Story usi set mein jis post ke baad doc mein aati hai.
+    Aakhri set mein akeli 1 post na bache -> pichle set mein (7-10). 3 ya kam posts -> [(None, outs)]."""
+    per = per or CFG.get("posts_per_pass", 3)
+    units, order = {}, []
+    for o in outs:
+        key = ("c", o["d"]["carousel"]) if o["d"].get("carousel") else id(o)
+        if key not in units:
+            units[key] = []
+            order.append(key)
+        units[key].append(o)
+    posts = [k for k in order if units[k][0]["type"] != "story"]
+    if len(posts) <= per:
+        return [(None, list(outs))]
+    groups = [posts[i:i + per] for i in range(0, len(posts), per)]
+    if len(groups) > 2 and len(groups[-1]) == 1:
+        tail = groups.pop()
+        groups[-1] += tail
+    where, n = {}, 0
+    for g in groups:
+        for k in g:
+            where[k] = (n, groups.index(g))
+            n += 1
+    last = 0
+    for k in order:  # story -> pichli post ka set
+        if k in where:
+            last = where[k][1]
+        else:
+            where[k] = (None, last)
+    sets = []
+    for gi, g in enumerate(groups):
+        a, b = posts.index(g[0]) + 1, posts.index(g[-1]) + 1
+        label = f"{a}-{b}" if a != b else str(a)
+        sets.append((label, [o for k in order if where[k][1] == gi for o in units[k]]))
+    return sets
+
+
 async def generate_and_download(waseem, cid, company, designs, out_dir, summary):
     # Enforce company policy here too, including callers that bypass process_doc.
     if not is_mockup_company(company):
@@ -2244,6 +2282,16 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     already_made = sum(1 for o in outs if o.get("file"))
     if already_made:
         log(f"  {already_made} image(s) pichli dafa ban chuki thin — wahan se aage (dobara nahi bana raha)")
+    # 3 se zyada posts (Dental 10 posts): ek dafa mein sirf ek set (1-3 + story), phir 2 aur companies,
+    # phir agla set (4-6) — ChatGPT ek chat mein lagataar atak jata hai
+    sets = file_sets(outs) if not summary.get("only_post") else [(None, outs)]
+    if len(sets) > 1:
+        todo_sets = [(lbl, so) for lbl, so in sets if any(not o.get("file") for o in so)]
+        if todo_sets:
+            lbl, outs = todo_sets[0]
+            summary["part"], summary["parts_left"] = lbl, len(todo_sets) - 1
+            log(f"  Bari file ({len(sets)} sets: {', '.join(x for x, _ in sets)}) — is dafa sirf posts {lbl}"
+                + (f"; baqi {len(todo_sets) - 1} set(s) doosri companies ke baad" if len(todo_sets) > 1 else " (aakhri set)"))
 
     async def send_with_limit_retry(message, files):
         for attempt in range(retry_limit + 1):
@@ -2525,6 +2573,9 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
 
     # ---- final images -> Downloads\<date>\<company>\ (sirf images, stories bhi) ----
     final = final_dir(company, summary.get("file"))
+    if summary.get("part"):  # bari file ka set -> apna folder (1-3, 4-6, 7-10)
+        final = final / summary["part"]
+        final.mkdir(parents=True, exist_ok=True)
     for o in results:
         if o.get("file") and not o.get("qa_fail"):
             dest = final / f"{o['name'].split(' (')[0]}{o['file'].suffix}"
@@ -3093,6 +3144,8 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
             raise RuntimeError("Saari posts ki images download fail — kuch nahi bheja")
     finally:
         HUB.designer_busy = False  # generate wait mein Gmail OK; download_generated khud busy set karega
+    # har nayi company / file: ChatGPT hard refresh (purani tab band, chat nayi tab mein) — phir message
+    log("  ChatGPT hard refresh (nayi tab) — phir is file ke messages")
     await waseem.goto(f"{CHATGPT}/c/{cid}")
     await generate_and_download(waseem, cid, company, designs, out_dir, summary)
 
@@ -3484,11 +3537,17 @@ async def run_all(only=None, only_post=None):
                     raise RuntimeError("File incomplete — failed/missing images summary mein hain; DONE mark nahi ki")
                 if summary.get("designs") and not summary.get("made"):  # 0 images bani -> DONE kabhi nahi
                     raise RuntimeError("File incomplete — 0 images bani; DONE mark nahi ki")
-                if not only_post:  # sirf ek post ka test -> file ko "done" mat karo
-                    clear_progress(doc_id)  # file poori -> adhoori images ka record khatam
-                    state[doc_id] = {"status": "done", "title": title, "at": datetime.now().isoformat(),
-                                     "reels_skipped": summary["reels"]}
-                log(f"[{i}/{total}] DONE: {title}")
+                if summary.get("parts_left"):  # bari file ka ek set bana -> baqi sets doosri companies ke baad
+                    after = CFG.get("big_file_after_files", 2)
+                    queue.insert(min(after, len(queue)), tab)
+                    log(f"[{i}/{total}] SET {summary['part']} BAN GAYA: {title} — baqi {summary['parts_left']} set(s) "
+                        f"{after} aur files ke baad (DONE tab hogi jab saare sets ban jayen)")
+                else:
+                    if not only_post:  # sirf ek post ka test -> file ko "done" mat karo
+                        clear_progress(doc_id)  # file poori -> adhoori images ka record khatam
+                        state[doc_id] = {"status": "done", "title": title, "at": datetime.now().isoformat(),
+                                         "reels_skipped": summary["reels"]}
+                    log(f"[{i}/{total}] DONE: {title}")
             except FileSkipped:
                 HUB.skip.discard(norm(folder))
                 summary["skipped"] = True
