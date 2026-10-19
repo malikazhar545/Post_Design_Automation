@@ -155,5 +155,6 @@
   "rest_after_images": 4,
   "rest_between_sets_minutes": 3,
   "rest_before_carousel_minutes": 1,
-  "rest_between_files_minutes": 2
+  "rest_between_files_minutes": 2,
+  "rest_before_retry_minutes": 2
 }

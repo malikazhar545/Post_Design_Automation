@@ -2270,12 +2270,14 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     big_file = len([o for o in outs if not o.get("file")]) > CFG.get("rest_after_images", 4)
     sent_once = []
 
-    async def rest_break(carousel=False):
-        # carousel: pehle message ke baad hamesha aaram + hard refresh (jaldi jaldi carousel -> ChatGPT garbar)
-        if sent_once and (big_file or carousel):
+    async def rest_break(carousel=False, single=False):
+        # carousel / alag message (story, chhooti post): pehle message ke baad hamesha aaram + hard refresh
+        # (jaldi jaldi requests -> ChatGPT 'Try again' / garbar)
+        if sent_once and (big_file or carousel or single):
             mins = CFG.get("rest_between_sets_minutes", 3) if big_file else CFG.get("rest_before_carousel_minutes", 1)
-            await chatgpt_rest(mins, "carousel se pehle, phir hard refresh" if carousel and not big_file
-                               else "bari file — agla set hard refresh ke baad")
+            await chatgpt_rest(mins, "bari file — agla set hard refresh ke baad" if big_file
+                               else "carousel se pehle, phir hard refresh" if carousel
+                               else "agle message se pehle, phir hard refresh")
             try:
                 await waseem.goto(f"{CHATGPT}/c/{cid}")
             except Exception as e:
@@ -2351,6 +2353,12 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                     todo_b = [o for o in batch if not o.get("file")]
                     if not todo_b:
                         break
+                    if attempt:  # 'Try again' / slides chhoot gayin -> fauran dobara nahi: aaram + hard refresh
+                        await chatgpt_rest(CFG.get("rest_before_retry_minutes", 2), "baqi slides se pehle, phir hard refresh")
+                        try:
+                            await waseem.goto(f"{CHATGPT}/c/{cid}")
+                        except Exception as e:
+                            log(f"  (refresh: {e})")
                     before = set(await page_image_refs(waseem, cid))
                     msg_b, files_b, _ = build_design_message(company, designs, outputs=todo_b, already=uploaded)
                     if refs:
@@ -2405,7 +2413,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         if limit_hit:  # limit retry ke baad bhi -> baqi images pending (jo bani hain woh save hongi)
             summary.setdefault("image_fail", []).append(f"{who(output)}: ChatGPT limit — nahi bani")
             continue
-        await rest_break()
+        await rest_break(single=True)
         try:
             before = set(await page_image_refs(waseem, cid))
             single_msg, single_files, _ = build_design_message(company, designs, outputs=[output], already=uploaded)

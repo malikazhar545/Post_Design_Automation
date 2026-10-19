@@ -1113,3 +1113,13 @@ class InstagramEmbedTests(unittest.TestCase):
     def test_single_post_image(self):
         html = 'GraphImage <img class="EmbeddedMediaImage" alt="x" src="https://cdn.example/one.jpg?a=1&amp;b=2" />'
         self.assertEqual(server.instagram_embed_urls(html), ["https://cdn.example/one.jpg?a=1&b=2"])
+
+
+def setUpModule():  # ChatGPT ke aaram (minute) tests mein fauran
+    global _rest_patch
+    _rest_patch = patch.object(server, "chatgpt_rest", new=AsyncMock())
+    _rest_patch.start()
+
+
+def tearDownModule():
+    _rest_patch.stop()

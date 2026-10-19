@@ -145,3 +145,13 @@ Caption: Not slide text""")
         self.assertEqual([d["slide"] for d in designs], [1, 2])
         parent = server.split_sections([("Post 3 (Carousel)", False)])[0]["label"]
         self.assertEqual([d["section"] for d in designs], [parent] * 2)
+
+
+def setUpModule():  # ChatGPT ke aaram (minute) tests mein fauran
+    global _rest_patch
+    _rest_patch = patch.object(server, "chatgpt_rest", new=AsyncMock())
+    _rest_patch.start()
+
+
+def tearDownModule():
+    _rest_patch.stop()
