@@ -2093,6 +2093,10 @@ def build_design_message(company, designs, outputs=None, already=()):
         if any(o["d"].get("before_after") == "pair" for o in outs):
             rules = rules.replace("NEVER create a collage", "Except the before/after comparison, NEVER create a collage", 1)
         rules += "\n- " + CFG["before_after_rule"]
+    # real models wali companies (Wear Wood): har post mein naya chehra / naya insaan (2 files baad wahi face aa gaya tha)
+    if CFG.get("model_variety_note") and (is_mockup_company(company) or any(
+            norm(x) in norm(company) for x in CFG.get("model_variety_companies", []))):
+        rules += "\n- " + CFG["model_variety_note"]
     # config.json "company_notes": {"aim tech": "..."} — sirf us company ke har message mein
     for key, note in CFG.get("company_notes", {}).items():
         if note and norm(key) in norm(company):

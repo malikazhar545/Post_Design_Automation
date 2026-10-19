@@ -316,6 +316,16 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Carousel 1 Slide 3 (4:5):", chat_sends[1])
         self.assertFalse(summary.get("image_fail"))
 
+    async def test_company_rules_only_for_their_company(self):
+        cfg = {"model_variety_note": "PEOPLE / MODELS: new face", "model_variety_companies": ["wear wood"],
+               "company_notes": {"single parent": "NEVER use pink"}}
+        with patch.dict(server.CFG, cfg):
+            msg = lambda co: server.build_design_message(co, [server.new_design("post", "Post 1", "Heading")])[0]
+            self.assertIn("PEOPLE / MODELS", msg("Wear Wood"))
+            self.assertIn("NEVER use pink", msg("the single parent"))
+            self.assertNotIn("PEOPLE / MODELS", msg("HR Strategy Studio"))
+            self.assertNotIn("NEVER use pink", msg("HR Strategy Studio"))
+
     async def test_ten_posts_go_in_sets_of_three(self):
         designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 11)]
         sends = []

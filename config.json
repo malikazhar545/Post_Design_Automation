@@ -147,5 +147,9 @@
   },
   "max_posts_per_message": 3,
   "instagram_album_note": "The attached Instagram screenshots are ALL the pages of ONE Instagram carousel (album), in order. This is the whole carousel content in image screenshots. Create the whole album: each slide in 4:5 size in my {company} branding - {n} separate images, one slide per image, in the same order, every slide with the EXACT same text as its screenshot (word for word) and a relevant image. All slides in one consistent carousel style so they look like one series. Do not copy the screenshots' design, logo or other branding.",
-  "split_posts_from": 4
+  "split_posts_from": 4,
+  "model_variety_companies": [
+    "wear wood"
+  ],
+  "model_variety_note": "PEOPLE / MODELS: every design with a person must show a DIFFERENT person - different face, age, hairstyle, skin tone, body type and outfit - and a different activity/pose (what the person is doing must change in every post). NEVER reuse the same model or face from any earlier image in this chat, not even with a different product. Each product gets its own new model and its own new scene. Keep the product itself exactly as given."
 }
