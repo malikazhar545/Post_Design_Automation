@@ -1399,6 +1399,15 @@ async def screenshot_instagram(url, dest):
                 path = dest.with_name(f"{dest.stem}_slide{slide}.png")
                 img.crop(box).save(path)
             shots.append(path)
+            # album ka "Next" button page der se dikhata hai (HR 8: album sirf slide 1 bana) -> pehli slide par
+            # kuch dafa dobara dekho, tab hi single post maano
+            for _ in range(4 if slide == 1 and not rect["hasNext"] else 0):
+                await run_sleep(2.5)
+                await HUB.exec("instagram", tab, "ig_prepare")
+                again = await HUB.exec("instagram", tab, "ig_media") or {}
+                if again.get("hasNext"):
+                    rect["hasNext"] = True
+                    break
             if not rect["hasNext"]:
                 break
             await HUB.exec("instagram", tab, "ig_next")
@@ -2191,7 +2200,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
             refs = []
 
     # BATCH (aap ka apna tareeqa — ChatGPT ki image limit kam lagti hai):
-    #   saari posts EK message, saari stories EK message, har carousel EK message (saari slides),
+    #   posts 3-3 ke sets mein (max_posts_per_message), saari stories EK message, har carousel EK message (saari slides),
     #   saare product mockups EK message (5 products = 10 images). Ek message mein max 10 images.
     #   Jo image batch mein na bane -> neeche alag message mein (koi image chhootti nahi).
     if CFG.get("batch_mode", True) and not limit_hit:
@@ -2217,6 +2226,9 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                 batches.append((key, items))  # carousel ki SAARI slides EK message mein (10 ki had nahi)
                 continue
             size = cap - cap % 2 if key == "mockups" else cap  # ek product ke dono mockups ek hi batch mein
+            # 3 se zyada posts (regular file 3 post + 1 story) -> 3, 3, 3, 1 sets; ChatGPT 3 se zyada par atakta hai
+            if key == "posts" and len(items) >= CFG.get("split_posts_from", 4):
+                size = max(1, min(size, CFG.get("max_posts_per_message", 3)))
             batches += [(key, items[i:i + size]) for i in range(0, len(items), size)]
         for key, batch in batches:
             if limit_hit:
@@ -2240,6 +2252,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                         head = CFG["batch_mockups_note"].format(n=len(todo_b), products=n_prod)
                     elif carousel and attempt:
                         head = CFG["batch_carousel_continue_note"].format(n=len(todo_b), total=len(batch))
+                    elif carousel and todo_b[0]["d"].get("ig_album"):  # Instagram album: saare pages ke screenshots
+                        head = CFG["instagram_album_note"].format(n=len(todo_b), company=company)
                     elif carousel:
                         head = CFG["batch_carousel_note"].format(n=len(todo_b))
                     else:
@@ -2804,7 +2818,7 @@ def split_instagram_carousels(designs):
             continue
         next_c += 1
         for k, shot in enumerate(shots, 1):
-            out.append(dict(d, ig_shot=[shot], carousel=next_c, slide=k, label=f"{d['label']} - Slide {k}",
+            out.append(dict(d, ig_shot=[shot], carousel=next_c, slide=k, ig_album=len(shots), label=f"{d['label']} - Slide {k}",
                             content=d["content"] if k == 1 else "", section=d.get("section", d["label"])))
     return out
 

@@ -316,13 +316,45 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Carousel 1 Slide 3 (4:5):", chat_sends[1])
         self.assertFalse(summary.get("image_fail"))
 
+    async def test_ten_posts_go_in_sets_of_three(self):
+        designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 11)]
+        sends = []
+        with patch.dict(server.CFG, {"batch_mode": True, "max_posts_per_message": 3}):
+            saved, summary, error = await self._run_capture(
+                designs, [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["10"]], sends)
+        self.assertIsNone(error)
+        self.assertEqual(len(saved), 10)
+        self.assertEqual(len(sends), 4)  # 3 + 3 + 3 + 1
+        self.assertIn("Create these 3 posts", sends[0])
+        self.assertIn("Post 10", sends[3])
+        self.assertNotIn("Post 4 (4:5)", sends[0])
+
+    async def test_five_posts_still_one_message(self):
+        designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 6)]
+        sends = []
+        with patch.dict(server.CFG, {"batch_mode": True, "max_posts_per_message": 3, "split_posts_from": 6}):
+            saved, summary, error = await self._run_capture(designs, [["1", "2", "3", "4", "5"]], sends)
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(len(saved), 5)
+
+    async def test_instagram_album_whole_carousel_note(self):
+        d = server.new_design("post", "Post 1", "")
+        d["ig_shot"] = [Path("ig_s1.png"), Path("ig_s2.png"), Path("ig_s3.png")]
+        designs = server.split_instagram_carousels([d])
+        sends = []
+        with patch.dict(server.CFG, {"batch_mode": True}):
+            saved, summary, error = await self._run_capture(designs, [["s1", "s2", "s3"]], sends)
+        self.assertEqual(len(sends), 1)  # poora album EK message
+        self.assertIn("whole carousel content in image screenshots", sends[0])
+        self.assertEqual(len(saved), 3)
+
     async def test_same_image_twice_is_not_counted_and_instagram_post_stays_in_batch(self):
         designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in (1, 2, 3)]
         ig = server.new_design("post", "Post 4", "")
         ig["ig_shot"] = [Path("ig.png")]
         designs.append(ig)
         sends = []
-        with patch.dict(server.CFG, {"batch_mode": True}):
+        with patch.dict(server.CFG, {"batch_mode": True, "split_posts_from": 10}):
             # batch (Instagram post bhi isi mein): Post 1 ki image 2 dafa (Post 2 ki jagah) -> sirf Post 2 alag message
             saved, summary, _ = await self._run_capture(designs, [["a", "a", "c", "ig"], ["b"]], sends)
         self.assertEqual(saved, {"Post 1": "a", "Post 2": "b", "Post 3": "c", "Post 4": "ig"})

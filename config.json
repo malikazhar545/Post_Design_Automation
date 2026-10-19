@@ -142,6 +142,10 @@
   "gmail_max_days": 5,
   "gmail_max_per_day": 2,
   "company_notes": {
-    "aim tech": "{company} TEXT STYLE (very important): keep all text SMALL and subtle - small heading, small body text, lots of breathing space. Natural, clean, realistic look - NOT overdone: no huge bold headlines, no heavy effects, no clutter. The photo/visual should lead, the text only supports it."
-  }
+    "aim tech": "{company} TEXT STYLE (very important): keep all text SMALL and subtle - small heading, small body text, lots of breathing space. Natural, clean, realistic look - NOT overdone: no huge bold headlines, no heavy effects, no clutter. The photo/visual should lead, the text only supports it.",
+    "single parent": "{company} BRAND COLOURS ARE FINAL (from the logo): YELLOW / GOLD + BLUE / NAVY, with white or dark-navy text. Headings in navy, white or yellow only, highlights/underlines in yellow, accents in blue. NEVER use pink, magenta, purple, red or any colour outside the logo for text, headings, highlights or shapes - pink text is wrong for this brand. The photo itself may have natural colours."
+  },
+  "max_posts_per_message": 3,
+  "instagram_album_note": "The attached Instagram screenshots are ALL the pages of ONE Instagram carousel (album), in order. This is the whole carousel content in image screenshots. Create the whole album: each slide in 4:5 size in my {company} branding - {n} separate images, one slide per image, in the same order, every slide with the EXACT same text as its screenshot (word for word) and a relevant image. All slides in one consistent carousel style so they look like one series. Do not copy the screenshots' design, logo or other branding.",
+  "split_posts_from": 4
 }
