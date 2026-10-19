@@ -9,3 +9,4 @@ __pycache__/
 *.pyc
 tests/_runs/
 RESTART_SERVER.bat
+tests/_no_*.json

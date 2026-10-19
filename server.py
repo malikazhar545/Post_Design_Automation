@@ -2098,6 +2098,28 @@ def expand_outputs(designs):
     return outs
 
 
+MODEL_FILE = OUT_ROOT / "model_rotation.json"
+
+
+def pick_model(d):
+    """Har product ka alag insaan, baari baari: Asian aurat, African mard, South Asian aurat... Ginti file mein
+    yaad rehti hai -> agli file wahan se aage (pichli file wala insaan dobara nahi). Ek product = ek hi chuna hua."""
+    if d.get("model"):
+        return d["model"]
+    rot = CFG["model_rotation"]
+    try:
+        n = json.loads(MODEL_FILE.read_text(encoding="utf-8")).get("next", 0)
+    except Exception:
+        n = 0
+    d["model"] = rot[n % len(rot)]
+    try:
+        OUT_ROOT.mkdir(parents=True, exist_ok=True)
+        MODEL_FILE.write_text(json.dumps({"next": n + 1}), encoding="utf-8")
+    except Exception:
+        pass
+    return d["model"]
+
+
 def doc_post_count(designs, reels, done_posts):
     """Doc ki posts (carousel = 1, mockups = apni post) + reels + pehle se done — checker ki ginti."""
     keys = {d.get("section") if d.get("carousel") else d["label"] for d in designs}
@@ -2167,6 +2189,8 @@ def build_design_message(company, designs, outputs=None, already=()):
             o.setdefault("name", f"Mockup {mockups} (4:5)")
             key = "product_mockup_placed" if t == "mockup_placed" else "product_mockup_use"
             lines.append(CFG[key].format(n=file_no(d["product_path"], fresh=True)))
+            if t == "mockup_use" and CFG.get("model_rotation"):  # har product ka apna insaan (Wear Wood)
+                lines.append(CFG["model_for_mockup_note"].format(model=pick_model(d)))
             lines.append(CFG["product_mockup_rules"])
             blocks.append(f"{o['name']}:\n" + "\n".join(lines))
             continue

@@ -1133,11 +1133,15 @@ def setUpModule():  # ChatGPT ke aaram (minute) tests mein fauran
     global _log_patch  # asal Output\company_log.json kabhi na parho
     _log_patch = patch.object(server, "COMPANY_LOG", server.BASE / "tests" / "_no_company_log.json")
     _log_patch.start()
+    global _model_patch
+    _model_patch = patch.object(server, "MODEL_FILE", server.BASE / "tests" / "_no_model_rotation.json")
+    _model_patch.start()
 
 
 def tearDownModule():
     _rest_patch.stop()
     _log_patch.stop()
+    _model_patch.stop()
 
 
 class FileSetsTests(unittest.TestCase):

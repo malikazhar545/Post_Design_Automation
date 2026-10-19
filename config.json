@@ -163,5 +163,20 @@
   "limit_window_hours": 12,
   "recheck_after_files": 2,
   "night_stop_at": "2026-10-20 04:00",
-  "night_idle_minutes": 3
+  "night_idle_minutes": 3,
+  "model_rotation": [
+    "East Asian woman, mid 20s",
+    "African man, early 30s",
+    "South Asian woman, late 20s",
+    "European man, 40s",
+    "Middle Eastern woman, 30s",
+    "Latino man, 20s",
+    "African woman, 30s",
+    "East Asian man, late 20s",
+    "European woman, 20s",
+    "South Asian man, 30s",
+    "Latina woman, 40s",
+    "Middle Eastern man, 20s"
+  ],
+  "model_for_mockup_note": "MODEL FOR THIS MOCKUP: {model} - a completely new person (new face, hairstyle and outfit) who has not appeared in any earlier image of this chat; a different activity/pose from the other mockups."
 }
