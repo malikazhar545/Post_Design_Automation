@@ -3449,8 +3449,18 @@ async def run_all(only=None, only_post=None):
         net_retries = {}
         retry_later = set()  # 0 images wali files: baqi sab ke baad ek dafa dobara
         rest_next = False  # pichli file ChatGPT par bani -> agli se pehle aaram
+        # bari file ka set bana -> agla set tab jab 2 aur files ban jayen (ya 30 min koi file na aaye)
+        waiting, released, files_done = [], set(), 0
+        wait_after = CFG.get("big_file_after_files", 2)
+        wait_max = CFG.get("big_file_max_wait_minutes", 30) * 60
         watch_until, reported = None, 0
         while True:
+            for w in list(waiting):  # (tab, files_done jab ruki, kab ruki)
+                if files_done - w[1] >= wait_after or run_time() - w[2] >= wait_max:
+                    waiting.remove(w)
+                    released.add(doc_id_of(w[0]))
+                    queue.insert(0, w[0])
+                    log(f"Bari file ka agla set ab: {folder_of(w[0]['title'])}")
             if not queue and not only:
                 # line khaali: summary do, phir har ~8 sec nayi kholi files dekhte raho (live)
                 if len(report) > reported:
@@ -3463,7 +3473,7 @@ async def run_all(only=None, only_post=None):
                 elif watch_until is None:
                     log("Koi pending file nahi — nayi files ka intezar...")
                     watch_until = run_time() + CFG.get("watch_idle_minutes", 30) * 60
-                if run_time() >= watch_until:
+                if run_time() >= watch_until and not waiting:
                     break
                 HUB.watching = True
                 await run_sleep(CFG.get("watch_poll_seconds", 8))
@@ -3486,8 +3496,10 @@ async def run_all(only=None, only_post=None):
                 except Exception as e:
                     log(f"  (nayi files check nahi ho saki: {e})")
             if not queue:
-                if only:
+                if only and not waiting:
                     break
+                if only:
+                    await run_sleep(CFG.get("watch_poll_seconds", 8))
                 continue  # watch mode: upar wala block hi khatam karta hai
             tab = queue.pop(0)
             i += 1
@@ -3496,6 +3508,18 @@ async def run_all(only=None, only_post=None):
             total = i + len(queue)
             m = re.search(r"/document/d/([^/]+)", tab["url"])
             doc_id, title = m.group(1), tab["title"]
+            st = state.get(doc_id, {})
+            if st.get("status") == "partial" and doc_id not in released and not only_post:
+                # restart ke baad bhi: pichle set ke baad kitni aur files bani? kam -> abhi nahi
+                since = sum(1 for k, v in state.items() if k != doc_id and v.get("status") == "done"
+                            and str(v.get("at", "")) > str(st.get("at", "")))
+                age = (datetime.now() - datetime.fromisoformat(st["at"])).total_seconds() if st.get("at") else wait_max
+                if since < wait_after and age < wait_max:
+                    waiting.append((tab, files_done - since, run_time() - age))
+                    log(f"[{i}/{total}] {folder_of(title)}: agla set {wait_after} aur files ke baad "
+                        f"(ya {wait_max // 60} min) — ChatGPT ko is chat se aaram")
+                    i -= 1
+                    continue
             if state.get(doc_id, {}).get("status") == "done" and not only_post:
                 log(f"[{i}/{total}] Pehle ho chuki: {title} — skip")
                 continue
@@ -3538,10 +3562,13 @@ async def run_all(only=None, only_post=None):
                 if summary.get("designs") and not summary.get("made"):  # 0 images bani -> DONE kabhi nahi
                     raise RuntimeError("File incomplete — 0 images bani; DONE mark nahi ki")
                 if summary.get("parts_left"):  # bari file ka ek set bana -> baqi sets doosri companies ke baad
-                    after = CFG.get("big_file_after_files", 2)
-                    queue.insert(min(after, len(queue)), tab)
+                    released.discard(doc_id)
+                    waiting.append((tab, files_done, run_time()))
+                    if not only_post:
+                        state[doc_id] = {"status": "partial", "title": title, "at": datetime.now().isoformat(),
+                                         "part": summary["part"]}
                     log(f"[{i}/{total}] SET {summary['part']} BAN GAYA: {title} — baqi {summary['parts_left']} set(s) "
-                        f"{after} aur files ke baad (DONE tab hogi jab saare sets ban jayen)")
+                        f"{wait_after} aur files ke baad (ya {wait_max // 60} min) — DONE tab jab saare sets ban jayen")
                 else:
                     if not only_post:  # sirf ek post ka test -> file ko "done" mat karo
                         clear_progress(doc_id)  # file poori -> adhoori images ka record khatam
@@ -3582,6 +3609,8 @@ async def run_all(only=None, only_post=None):
             save_state(state)
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
             rest_next = bool(summary.get("designs"))  # ChatGPT par kaam hua -> agli file se pehle aaram
+            if summary.get("designs") and not summary.get("parts_left"):
+                files_done += 1  # bari file ke intezar ki ginti
             HUB.current = {}
             HUB.designer_busy = False
             try:
