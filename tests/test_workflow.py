@@ -1247,3 +1247,13 @@ class NightIdleTests(unittest.TestCase):
             self.assertFalse(server.run_idle())
         finally:
             (hub.running, hub.watching, hub.queue_view, hub.current, hub.waiting_limit_only, hub.rest_until) = saved
+
+
+class RedoNotLimitedTests(unittest.TestCase):
+    def test_same_file_logged_counts_fully(self):
+        with work_directory() as tmp:
+            with patch.object(server, "COMPANY_LOG", tmp / "company_log.json"), patch.object(server, "OUT_ROOT", tmp):
+                server.log_company_unit("Wear Wood", "ww10", "Wear Wood 10", "1-3", 3)
+                server.log_company_unit("Wear Wood", "ww10", "Wear Wood 10", "4-6", 3)
+                self.assertEqual(server.doc_items_logged("ww10"), 6)
+                self.assertEqual(server.doc_items_logged("other"), 0)

@@ -2316,6 +2316,15 @@ def drop_duplicate(o, outs):
 COMPANY_LOG = OUT_ROOT / "company_log.json"
 
 
+def doc_items_logged(doc_id):
+    """Is file ki kitni posts pehle hi (pichle hafte) ginti mein aa chuki."""
+    try:
+        data = json.loads(COMPANY_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    return sum(e.get("items", 3) for e in data if doc_id and e.get("doc") == doc_id)
+
+
 def company_items(company, hours=None):
     """Pichle 12 ghante (limit_window_hours) mein is company ki kitni posts bani — reels bhi ginti mein (aap banate ho magar din ki
     6 mein shamil). Story alag. Purane record (items nahi) = 3 (ek file)."""
@@ -2429,7 +2438,10 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
             log(f"  Bari file ({len(sets)} sets: {', '.join(x[0] for x in sets)}) — is dafa sirf posts {lbl}"
                 + (f"; baqi {len(todo_sets) - 1} set(s) doosri companies ke baad" if len(todo_sets) > 1 else " (aakhri set)"))
     summary["items"] = need
-    used = company_items(company) if not summary.get("only_post") else 0
+    # isi file ki chhooti images dobara (Wear Wood 10 ki bottle): posts pehle hi gini ja chuki -> had nahi, dobara ginti nahi
+    if doc_items_logged(summary.get("doc_id")) >= sum(x[2] for x in sets):
+        summary["redo"] = True
+    used = company_items(company) if not summary.get("only_post") and not summary.get("redo") else 0
     if used and used + need > day_items():  # company ki aaj ki 6 posts (reel samait) puri -> agle din
         raise DayLimit(company, need)
 
@@ -3779,7 +3791,7 @@ async def run_all(only=None, only_post=None):
             save_state(state)
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
             rest_next = bool(summary.get("designs"))  # ChatGPT par kaam hua -> agli file se pehle aaram
-            if summary.get("made") and not only_post:
+            if summary.get("made") and not only_post and not summary.get("redo"):
                 log_company_unit(company, doc_id, folder, summary.get("part"), summary.get("items", 3))
             if summary.get("made") and not summary.get("parts_left"):
                 files_done += 1  # bari file ke intezar ki ginti
