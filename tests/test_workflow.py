@@ -1182,3 +1182,12 @@ class CompanyDayLimitTests(unittest.TestCase):
         self.assertEqual([x[0] for x in sets], ["1-3", "4-6", "7-8"])
         self.assertEqual([o["name"] for o in sets[0][1]], ["Post 1", "Post 2"])  # reel ne 3rd jagah li
         self.assertEqual(sets[0][2], 3)  # din ki ginti: 3 (reel samait)
+
+
+class LabelWithPeriodTests(unittest.TestCase):
+    def test_post_number_with_period_is_a_label(self):
+        doc = ("Post 1\nHeading\nFirst heading\nCaption\nc1\n"
+               "Post 2.\nHeading\nSecond heading\nCaption\nc2\n"
+               "Post 3.\nHeading\nThird heading\nCaption\nc3")
+        designs, _, _ = server.parse_doc(doc)
+        self.assertEqual([d["label"] for d in designs], ["Post 1", "Post 2", "Post 3"])

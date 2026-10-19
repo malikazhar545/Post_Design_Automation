@@ -609,6 +609,7 @@ def match_label(line):
     """Post label line? 'Post 1 https://...' -> label URL ke baghair pehchano. Return (match, urls_on_line)."""
     urls = [u.group(0) for u in URL_RE.finditer(line)]
     probe = URL_RE.sub(" ", line).strip(" -–:\t") if urls else line
+    probe = re.sub(r"(\d)\.\s*$", r"\1", probe)  # "Post 2." (Angela 15: neeche wali 2 posts chhoot gayi thin)
     m = SECTION_RE.match(probe)
     if m and (m.group("rest") is not None or len(probe.split()) <= 6) \
             and not HEADING_RE.match(probe) and not CAPTION_RE.match(probe):
