@@ -140,5 +140,8 @@
   "gmail_scan_seconds": 300,
   "gmail_autostart": true,
   "gmail_max_days": 5,
-  "gmail_max_per_day": 2
+  "gmail_max_per_day": 2,
+  "company_notes": {
+    "aim tech": "{company} TEXT STYLE (very important): keep all text SMALL and subtle - small heading, small body text, lots of breathing space. Natural, clean, realistic look - NOT overdone: no huge bold headlines, no heavy effects, no clutter. The photo/visual should lead, the text only supports it."
+  }
 }

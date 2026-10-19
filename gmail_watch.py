@@ -86,17 +86,27 @@ def found_today(item):
 
 def recent_files(item, state=None):
     """Pichle 24 ghante mein is company ki files — Gmail se khuli YA kisi bhi tarah khul kar bani (state).
-    Har file ek dafa gini jati hai (doc id / naam se)."""
+    Har file EK dafa: Gmail record (naam / doc id) aur bani-file record (doc id) naam se bhi milaye jate hain."""
     cut = _cutoff()
-    ids = set()
-    for f in found_today(item):
-        ids.add(f.get("doc") or (f["file"] if re.fullmatch(r"[\w-]{25,}", f.get("file", "")) else S.norm(f.get("file", ""))))
     key = S.norm(item["name"])
+    by_name = {}  # bani file ka naam -> doc id
     for doc_id, v in (state or {}).items():
         at = str(v.get("at", "")).replace("T", " ")
         title = S.norm(S.folder_of(v.get("title", "")))
         if v.get("status") == "done" and at >= cut and key and (key in title or key.replace(" ", "") in title.replace(" ", "")):
-            ids.add(doc_id)
+            by_name[title] = doc_id
+    ids = set(by_name.values())
+    for f in found_today(item):
+        name = f.get("file", "")
+        stem = S.norm(re.sub(r"\.docx?$", "", name, flags=re.I))
+        if f.get("doc"):
+            ids.add(f["doc"])
+        elif stem in by_name:
+            ids.add(by_name[stem])          # wahi file jo bani — do dafa nahi
+        elif re.fullmatch(r"[\w-]{25,}", name):
+            ids.add(name)                   # link ka naam hi doc id tha
+        else:
+            ids.add(stem)
     return ids
 
 

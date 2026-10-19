@@ -2084,6 +2084,10 @@ def build_design_message(company, designs, outputs=None, already=()):
         if any(o["d"].get("before_after") == "pair" for o in outs):
             rules = rules.replace("NEVER create a collage", "Except the before/after comparison, NEVER create a collage", 1)
         rules += "\n- " + CFG["before_after_rule"]
+    # config.json "company_notes": {"aim tech": "..."} — sirf us company ke har message mein
+    for key, note in CFG.get("company_notes", {}).items():
+        if note and norm(key) in norm(company):
+            rules += "\n- " + note.format(company=company)
     return "\n\n".join(blocks) + "\n\n" + rules, files, outs
 
 
