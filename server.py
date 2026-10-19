@@ -88,11 +88,14 @@ class Hub:
         self.queue_view = []       # dashboard: line mein agli files
         self.watching = False      # run nayi files ke intezar mein (Gmail scan isi waqt ho sakta hai)
         self.designer_busy = False # docs/images download (Designer ya ChatGPT) -> Gmail scan ruke
+        self.rest_until = 0.0      # ChatGPT aaram (dashboard par countdown)
+        self.rest_reason = ""
 
     def run_status(self):
         return {"type": "busy", "busy": self.running, "paused": self.paused,
                 "stopping": self.pause_requested and not self.paused, "can_stop": True,
-                "connected": sorted(self.clients)}
+                "connected": sorted(self.clients),
+                "rest_left": max(0, int(self.rest_until - time.time())), "rest_reason": self.rest_reason}
 
     async def publish_status(self):
         await self.send("designer", self.run_status())
@@ -174,6 +177,18 @@ def run_time():
     if asyncio.current_task() is getattr(HUB, "run_task", None):
         return now - HUB.paused_seconds - (now - HUB.pause_started if HUB.pause_started is not None else 0)
     return now
+
+
+async def chatgpt_rest(minutes, why):
+    """ChatGPT ko aaram (quality / 'too many requests' se bachao). Dashboard par countdown dikhta hai."""
+    if minutes <= 0:
+        return
+    log(f"  ChatGPT aaram: {minutes:g} minute — {why}")
+    HUB.rest_until, HUB.rest_reason = time.time() + minutes * 60, why
+    try:
+        await run_sleep(minutes * 60)
+    finally:
+        HUB.rest_until, HUB.rest_reason = 0.0, ""
 
 
 async def run_sleep(seconds):
@@ -2180,6 +2195,22 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                 await waseem.goto(f"{CHATGPT}/c/{cid}")
 
     group = []  # batch mein gayi images (limit report ke liye)
+    # bari file (10 posts / carousels — regular 3 post + 1 story se zyada): har message ke baad ChatGPT ko
+    # aaram (3 min) + hard refresh, phir agla set — warna 'too many requests' / Try again / atak jata hai
+    big_file = len([o for o in outs if not o.get("file")]) > CFG.get("rest_after_images", 4)
+    sent_once = []
+
+    async def rest_break(carousel=False):
+        # carousel: pehle message ke baad hamesha aaram + hard refresh (jaldi jaldi carousel -> ChatGPT garbar)
+        if sent_once and (big_file or carousel):
+            mins = CFG.get("rest_between_sets_minutes", 3) if big_file else CFG.get("rest_before_carousel_minutes", 1)
+            await chatgpt_rest(mins, "carousel se pehle, phir hard refresh" if carousel and not big_file
+                               else "bari file — agla set hard refresh ke baad")
+            try:
+                await waseem.goto(f"{CHATGPT}/c/{cid}")
+            except Exception as e:
+                log(f"  (refresh: {e})")
+        sent_once.append(1)
     uploaded = {d["website_brand"]["logo"] for d in designs if d.get("website_brand")}
     refs = style_refs(company)
     mem = CHAT_MEMORY.get("waseem", {}).get(norm(company)) or {}
@@ -2225,6 +2256,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                 key = "posts"
             kinds.setdefault(key, []).append(o)
         batches = []
+        # carousel aakhir mein (posts pehle) -> carousel se pehle aaram + hard refresh
+        kinds = dict(sorted(kinds.items(), key=lambda kv: kv[0].startswith("carousel")))
         for key, items in kinds.items():
             if key.startswith("carousel"):
                 batches.append((key, items))  # carousel ki SAARI slides EK message mein (10 ki had nahi)
@@ -2240,6 +2273,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
             if len(batch) == 1:
                 continue  # sirf ek image -> neeche normal single message
             carousel = key.startswith("carousel")
+            if any(not o.get("file") for o in batch):
+                await rest_break(carousel)
             try:
                 # carousel skip nahi hota: jo slides na banen -> usi carousel ka "continue" message (2 dafa tak)
                 for attempt in range(1 + (CFG.get("carousel_extra_tries", 2) if carousel else 0)):
@@ -2300,6 +2335,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         if limit_hit:  # limit retry ke baad bhi -> baqi images pending (jo bani hain woh save hongi)
             summary.setdefault("image_fail", []).append(f"{who(output)}: ChatGPT limit — nahi bani")
             continue
+        await rest_break()
         try:
             before = set(await page_image_refs(waseem, cid))
             single_msg, single_files, _ = build_design_message(company, designs, outputs=[output], already=uploaded)
@@ -3281,6 +3317,7 @@ async def run_all(only=None, only_post=None):
         queue, seen, i = list(tabs), {doc_id_of(t) for t in tabs}, 0
         net_retries = {}
         retry_later = set()  # 0 images wali files: baqi sab ke baad ek dafa dobara
+        rest_next = False  # pichli file ChatGPT par bani -> agli se pehle aaram
         watch_until, reported = None, 0
         while True:
             if not queue and not only:
@@ -3346,6 +3383,9 @@ async def run_all(only=None, only_post=None):
                 continue
             summary = {"file": folder, "reels": [], "done": [], "designs": 0, "error": None, "only_post": only_post,
                        "doc_id": doc_id}
+            if rest_next:  # pichli file ChatGPT par bani -> aaram, phir yeh file nayi (hard refresh) chat tab mein
+                await chatgpt_rest(CFG.get("rest_between_files_minutes", 2), f"agli file '{folder}' se pehle")
+                rest_next = False
             await wait_for_internet()  # net nahi -> yahin ruko (file fail nahi)
             report.append(summary)
             HUB.current = {"file": folder, "company": company, "i": i, "total": total, "since": time.time()}
@@ -3404,6 +3444,7 @@ async def run_all(only=None, only_post=None):
             # records (source images, prompts, QA) sirf Output\<date>\<file>\ mein — Downloads mein nahi
             save_state(state)
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
+            rest_next = bool(summary.get("designs"))  # ChatGPT par kaam hua -> agli file se pehle aaram
             HUB.current = {}
             HUB.designer_busy = False
             try:

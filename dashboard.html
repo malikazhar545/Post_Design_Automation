@@ -604,6 +604,11 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     ic.className = "now-ic " + cls; ic.innerHTML = ico(icon);
     $("#nowTitle").textContent = title; $("#nowSub").textContent = sub;
     $("#nowAct").textContent = last && s ? `${last[0]}  ${last[1].trim()}` : "";
+    if (s && s.rest_left > 0) {  // ChatGPT aaram ka timer (quality ke liye)
+      const m = Math.floor(s.rest_left / 60), sec = String(s.rest_left % 60).padStart(2, "0");
+      $("#nowAct").textContent = `ChatGPT aaram: ${m}:${sec} baqi — ${s.rest_reason}`;
+      if (!(c && c.file)) { title = "ChatGPT aaram kar raha hai"; $("#nowTitle").textContent = title; }
+    }
     $("#nowTime").textContent = side; $("#nowTimeLbl").textContent = sideLbl;
     prog.hidden = !(c && c.file);
     const sk = $("#nowSkip");

@@ -269,6 +269,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=qa)), \
                  patch.object(server.asyncio, "sleep", new=AsyncMock()), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 try:
                     await server.generate_and_download(chat, "cid", "Example", designs, work, summary)
@@ -339,6 +340,31 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Post 10", sends[3])
         self.assertNotIn("Post 4 (4:5)", sends[0])
 
+    async def test_big_file_rests_and_refreshes_between_sets(self):
+        designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 8)]
+        sends = []
+        with patch.dict(server.CFG, {"batch_mode": True, "max_posts_per_message": 3, "split_posts_from": 4,
+                                     "rest_after_images": 4, "rest_between_sets_minutes": 3}):
+            saved, summary, error = await self._run_capture(designs, [["1", "2", "3"], ["4", "5", "6"], ["7"]], sends)
+        self.assertEqual(len(saved), 7)
+        self.assertEqual(len(sends), 3)  # 3 + 3 + 1
+
+    async def test_carousel_goes_after_posts_with_rest_and_refresh(self):
+        designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in (1, 2)]
+        for k in (1, 2):
+            d = server.new_design("post", f"Post 3 - Slide {k}", f"Slide {k}")
+            d.update(carousel=1, slide=k, section="Post 3")
+            designs.insert(0, d)  # carousel doc mein pehle ho tab bhi posts ke baad jaye
+        sends, rest = [], AsyncMock()
+        with patch.dict(server.CFG, {"batch_mode": True, "rest_after_images": 4, "rest_before_carousel_minutes": 1}), \
+             patch.object(server, "chatgpt_rest", new=rest):
+            saved, summary, error = await self._run_capture(designs, [["p1", "p2"], ["s1", "s2"]], sends)
+        self.assertEqual(len(sends), 2)
+        self.assertIn("Heading 1", sends[0])     # posts pehle
+        self.assertIn("carousel", sends[1].lower())  # carousel baad mein
+        rest.assert_awaited_once()
+        self.assertEqual(rest.await_args.args[0], 1)  # carousel se pehle 1 minute
+
     async def test_five_posts_still_one_message(self):
         designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in range(1, 6)]
         sends = []
@@ -390,6 +416,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "download_generated", side_effect=download), \
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Example", designs, work, summary)
             return {p.stem: p.read_text() for p in final.glob("*.png")}, summary, None
@@ -409,6 +436,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "download_generated", side_effect=download), \
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Example", [design], work, {})
             first, second = chat.send.await_args_list
@@ -431,6 +459,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "download_generated", side_effect=download), \
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Opulent Wellness", [design], work, {})
             (only,) = chat.send.await_args_list
@@ -453,6 +482,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "download_generated", side_effect=download), \
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "remember_chat"), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Example", designs, work, {})
@@ -478,6 +508,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "download_generated", side_effect=download), \
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Example",
                                                    [server.new_design("post", "Post 1", "H")], work, {})
@@ -503,6 +534,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "download_generated", side_effect=download), \
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Example", designs, work, {"doc_id": "doc9"})
             (only,) = chat.send.await_args_list                    # sirf Post 3 bheji gayi
@@ -529,6 +561,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(server, "download_generated", side_effect=download), \
                  patch.object(server, "qa_batch", new=AsyncMock(return_value=([], []))), \
                  patch.object(server, "final_dir", return_value=final), \
+                 patch.object(server, "run_sleep", new=AsyncMock()), \
                  patch.object(server, "notify"), patch.object(server, "log"):
                 await server.generate_and_download(chat, "cid", "Wear Wood", [prod] + posts, work, {})
             mock_msg, posts_msg = chat.send.await_args_list           # mockups EK message, posts EK message
