@@ -2099,6 +2099,15 @@ def expand_outputs(designs):
     return outs
 
 
+def product_name(d):
+    """Product link ke aakhri hisse se naam: .../products/double-wall-bamboo-...-bottle-550ml -> 'Double Wall Bamboo ...'."""
+    url = d.get("product_url") or ""
+    slug = urlparse(url).path.rstrip("/").split("/")[-1] if url else ""
+    slug = re.sub(r"-(copy|\d{6,})$", "", slug)
+    name = " ".join(w for w in slug.split("-") if w).title()
+    return name or (d.get("content") or "the attached product").split("\n")[0][:60]
+
+
 MODEL_FILE = OUT_ROOT / "model_rotation.json"
 
 
@@ -2191,7 +2200,13 @@ def build_design_message(company, designs, outputs=None, already=()):
             mockups += 1
             o.setdefault("name", f"Mockup {mockups} (4:5)")
             key = "product_mockup_placed" if t == "mockup_placed" else "product_mockup_use"
-            lines.append(CFG[key].format(n=file_no(d["product_path"], fresh=True)))
+            n_prod = file_no(d["product_path"], fresh=True)
+            lines.append(CFG[key].format(n=n_prod))
+            # product ka naam (link se) + sirf isi message wala product — Wear Wood 10: bottle ki jagah
+            # ChatGPT ne chat ke purane sunglasses / watch dobara bana diye
+            lines.append(f"PRODUCT IN THIS MOCKUP: {product_name(d)} — use ONLY the product in uploaded file {n_prod} "
+                         "of THIS message. NEVER show a product from earlier images in this chat (no other sunglasses, "
+                         "watch or item).")
             if t == "mockup_use" and CFG.get("model_rotation"):  # har product ka apna insaan (Wear Wood)
                 lines.append(CFG["model_for_mockup_note"].format(model=pick_model(d)))
             lines.append(CFG["product_mockup_rules"])
