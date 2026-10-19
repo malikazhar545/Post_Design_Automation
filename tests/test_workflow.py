@@ -1207,3 +1207,21 @@ class MockupAndEmojiTests(unittest.TestCase):
     def test_heading_emojis_removed(self):
         self.assertEqual(server.strip_emoji("🚀 Grow your business 💼✨\nPart 2 ➡️ now ✅ — 50% off"),
                          "Grow your business\nPart 2 now — 50% off")
+
+
+class CheckerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_alert_when_doc_has_more_posts_than_made(self):
+        doc = [(l, None) for l in ("Post 1\nHeading\nA\nCaption\nc\nPost 2\nHeading\nB\nCaption\nc\n"
+                                   "Post 3\nHeading\nC\nCaption\nc").split("\n")]
+        with patch.object(server, "fetch_doc", new=AsyncMock(return_value=doc)), \
+             patch.object(server, "notify") as note, patch.object(server, "log"):
+            await server.recheck_file("d1", 1, "Angela 15", 1)  # sirf 1 bani thi
+            note.assert_called_once()
+            self.assertIn("2 post(s)", note.call_args.args[1])
+            note.reset_mock()
+            await server.recheck_file("d1", 1, "Angela 15", 3)  # sab bani -> koi alert nahi
+            note.assert_not_called()
+
+    def test_loose_count_sees_headings_even_if_labels_odd(self):
+        lines = [(l, None) for l in "Post 1\nHeading\nA\nPost two!!\nHeading\nB\nNext one\nHeading\nC".split("\n")]
+        self.assertEqual(server.loose_post_estimate(lines), 3)

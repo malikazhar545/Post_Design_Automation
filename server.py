@@ -2096,6 +2096,45 @@ def expand_outputs(designs):
     return outs
 
 
+def doc_post_count(designs, reels, done_posts):
+    """Doc ki posts (carousel = 1, mockups = apni post) + reels + pehle se done — checker ki ginti."""
+    keys = {d.get("section") if d.get("carousel") else d["label"] for d in designs}
+    return len(keys) + len(reels) + len(done_posts)
+
+
+LOOSE_LABEL_RE = re.compile(r"^\W*(?:post|story|reel|carousel|video)\s*#?\s*\d+\b", re.I)
+
+
+def loose_post_estimate(lines):
+    """Parser se alag, seedhi ginti: 'Post 3' jaisi lines aur 'Heading' / 'Caption' wali lines (jo zyada ho)."""
+    text = [_clean_line(l) for l, _ in lines]
+    labels = sum(1 for l in text if LOOSE_LABEL_RE.match(l))
+    heads = sum(1 for l in text if HEADING_RE.match(l) and not (HEADING_RE.match(l).group("rest") or "").strip())
+    caps = sum(1 for l in text if CAPTION_RE.match(l))
+    return max(labels, heads, caps)
+
+
+async def recheck_file(doc_id, tab_id, folder, made_sections):
+    """File DONE ke 2 files baad: doc dobara parho — koi post chhoot to nahi gayi (Angela 15: 'Post 2.' miss)
+    ya writer ne baad mein post to nahi daal di. Masla ho to alert (khud dobara nahi banata — duplicate na ho)."""
+    try:
+        lines = await fetch_doc(tab_id, doc_id)
+    except Exception as e:
+        log(f"  (checker: '{folder}' dobara nahi parh saka: {e})")
+        return
+    designs, reels, done_posts = parse_doc(lines)
+    now = doc_post_count(designs, reels, done_posts)
+    loose = loose_post_estimate(lines)
+    worst = max(now, loose)
+    if made_sections is not None and worst > made_sections:
+        msg = (f"'{folder}': doc mein ab ~{worst} posts hain, bani thi {made_sections} — "
+               f"{worst - made_sections} post(s) shayad miss / baad mein daali gayi. Doc dekh lo.")
+        log(f"⚠ CHECKER: {msg}")
+        notify("Checker: post miss?", msg)
+    else:
+        log(f"  Checker: '{folder}' theek — {made_sections} posts, koi miss nahi")
+
+
 EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿←-⇿⌀-⏿"
                       "️‍⃣\U000E0020-\U000E007F]+")
 
@@ -3111,6 +3150,7 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
             raise RuntimeError(f"Test selector '{summary['only_post']}': exactly 1 post chahiye, {len(designs)} mili")
         log(f"  (Test: sirf '{summary['only_post']}' -> 1 post)")
     summary["reels"], summary["done"] = reels, done_posts
+    summary["sections"] = doc_post_count(designs, reels, done_posts)  # checker: baad mein dobara gin kar milao
     if designs and reels:  # pehli post se pehle wali reels
         designs[0]["reels_before"] = len(reels) - sum(d.get("reels_after", 0) for d in designs)
     if reels:
@@ -3528,10 +3568,14 @@ async def run_all(only=None, only_post=None):
         rest_next = False  # pichli file ChatGPT par bani -> agli se pehle aaram
         # bari file ka set bana -> agla set tab jab 2 aur files ban jayen (ya 30 min koi file na aaye)
         waiting, released, files_done = [], set(), 0
+        rechecks = []  # (doc_id, tab_id, folder, kitni posts bani, files_done) — 2 files baad dobara gin kar check
         wait_after = CFG.get("big_file_after_files", 2)
         wait_max = CFG.get("big_file_max_wait_minutes", 30) * 60
         watch_until, reported = None, 0
         while True:
+            for r in [r for r in rechecks if files_done - r[4] >= CFG.get("recheck_after_files", 2)]:
+                rechecks.remove(r)
+                await recheck_file(*r[:4])
             for w in list(waiting):  # (tab, files_done jab ruki, kab ruki, company — agar din ki limit)
                 if w[3]:
                     ready = company_items(w[3][0]) + w[3][1] <= day_items()
@@ -3665,6 +3709,7 @@ async def run_all(only=None, only_post=None):
                         clear_progress(doc_id)  # file poori -> adhoori images ka record khatam
                         state[doc_id] = {"status": "done", "title": title, "at": datetime.now().isoformat(),
                                          "reels_skipped": summary["reels"]}
+                        rechecks.append((doc_id, tab["tabId"], folder, summary.get("sections"), files_done))
                     log(f"[{i}/{total}] DONE: {title}")
             except DayLimit as e:
                 released.discard(doc_id)
