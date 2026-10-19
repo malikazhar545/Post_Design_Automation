@@ -89,6 +89,7 @@ class Hub:
         self.watching = False      # run nayi files ke intezar mein (Gmail scan isi waqt ho sakta hai)
         self.designer_busy = False # docs/images download (Designer ya ChatGPT) -> Gmail scan ruke
         self.rest_until = 0.0      # ChatGPT aaram (dashboard par countdown)
+        self.open_docs = []        # Designer ki khuli Google Docs (har 20s) — dashboard line + Gmail ginti
         self.rest_reason = ""
 
     def run_status(self):
@@ -3727,7 +3728,7 @@ async def http_route(connection, request):
             today = dashboard_api.today_summary(OUT_ROOT, company_of_folder, load_state(), HUB.current.get("file"))
             return http_reply(connection, {
                 "server": HUB.run_status() | {"current": HUB.current, "uptime": int(time.time() - HUB.started_at),
-                                              "queue": [{"file": f, "skip": norm(f) in HUB.skip} for f in HUB.queue_view],
+                                              "queue": queue_list(),
                                               "current_skip": norm(HUB.current.get("file", "")) in HUB.skip,
                                               "roles": list(ROLES) + list(OPTIONAL_ROLES), "port": PORT},
                 "today": today, "log": lines[-600:], "log_seq": HUB.log_seq,
@@ -3766,6 +3767,38 @@ async def http_route(connection, request):
     return None
 
 
+def queue_list():
+    """Dashboard 'Line mein files': run ki line + Designer mein nayi kholi (abhi line mein nahi) + bari file ka intezar."""
+    out = [{"file": f, "skip": norm(f) in HUB.skip} for f in HUB.queue_view]
+    if not HUB.running:
+        return out
+    have = {norm(x["file"]) for x in out} | {norm(HUB.current.get("file", ""))}
+    state = load_state()
+    for t in HUB.open_docs:
+        m = re.search(r"/document/d/([^/]+)", t.get("url", ""))
+        f = folder_of(t.get("title", ""))
+        st = state.get(m.group(1), {}).get("status") if m else None
+        if not m or st == "done" or norm(f) in have:
+            continue
+        have.add(norm(f))
+        out.append({"file": f, "skip": norm(f) in HUB.skip,
+                    "note": "bari file — agla set baad mein" if st == "partial" else "nayi — agli baari mein line mein"})
+    return out
+
+
+async def watch_open_docs():
+    """Har 20s Designer ki khuli Docs tabs dekho (sirf list — koi tab focus/click nahi): file chalte hue bhi
+    aap ki nayi kholi file dashboard ki line mein fauran dikhe; run use agli baari mein line mein lagata hai."""
+    while True:
+        await asyncio.sleep(CFG.get("open_docs_poll_seconds", 20))
+        if "designer" not in HUB.clients:
+            continue
+        try:
+            HUB.open_docs = await HUB.call("designer", "list_doc_tabs", timeout=15) or []
+        except Exception:
+            pass
+
+
 async def main():
     async with serve(handler, "127.0.0.1", PORT, max_size=None, ping_interval=20, ping_timeout=60,
                      process_request=http_route):
@@ -3775,6 +3808,7 @@ async def main():
         cleanup_old_outputs()  # 7 din se purane Output\\<date> folders (space)
         asyncio.create_task(auto_resume())  # bijli / restart ke baad adhoora kaam khud
         gmail_watch.setup(sys.modules[__name__])
+        asyncio.create_task(watch_open_docs())  # nayi kholi files dashboard par fauran
         asyncio.create_task(gmail_watch.loop())  # dashboard ki Gmail list (OFF ho to kuch nahi karta)
         await asyncio.Future()
 

@@ -656,10 +656,10 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
         <div class="muted">${s && s.busy ? "Files tayyar ho rahi hain…" : "Designer profile mein Google Docs kholo — yahan list aa jayegi. Sab khuli files banengi; jo nahi banani us par <b>Skip</b>."}</div></div>`;
       return;
     }
-    const row = (f, n, now, skip) => `<div class="q ${now ? "now" : ""} ${skip ? "skip" : ""}"><span class="q-n num">${n}</span>
-      <div><div class="q-name">${esc(f)}</div><div class="q-sub">${now ? (skip ? "Skip ho rahi hai — agle safe point par chhod degi" : "Abhi ban rahi hai") : (skip ? "Skip hogi — nahi banegi" : "Line mein — banegi")}</div></div>
+    const row = (f, n, now, skip, note) => `<div class="q ${now ? "now" : ""} ${skip ? "skip" : ""}"><span class="q-n num">${n}</span>
+      <div><div class="q-name">${esc(f)}</div><div class="q-sub">${now ? (skip ? "Skip ho rahi hai — agle safe point par chhod degi" : "Abhi ban rahi hai") : (skip ? "Skip hogi — nahi banegi" : esc(note || "Line mein — banegi"))}</div></div>
       <button class="btn sm ${skip ? "" : "danger"}" type="button" data-skip="${esc(f)}" data-do="${skip ? "unskip" : "skip"}">${skip ? "Wapis lao" : "Skip"}</button></div>`;
-    el.innerHTML = (c?.file ? row(c.file, c.i, true, s.current_skip) : "") + q.map((x, k) => row(x.file, (c?.i || 0) + k + 1, false, x.skip)).join("");
+    el.innerHTML = (c?.file ? row(c.file, c.i, true, s.current_skip) : "") + q.map((x, k) => row(x.file, (c?.i || 0) + k + 1, false, x.skip, x.note)).join("");
     $$("[data-skip]", el).forEach(b => b.onclick = () => skipFile(b.dataset.skip, b.dataset.do, c && c.file === b.dataset.skip, b));
   }
 

@@ -93,8 +93,14 @@ def recent_files(item, state=None):
     for doc_id, v in (state or {}).items():
         at = str(v.get("at", "")).replace("T", " ")
         title = S.norm(S.folder_of(v.get("title", "")))
-        if v.get("status") == "done" and at >= cut and key and (key in title or key.replace(" ", "") in title.replace(" ", "")):
+        if v.get("status") in ("done", "partial") and at >= cut and key and (key in title or key.replace(" ", "") in title.replace(" ", "")):
             by_name[title] = doc_id
+    # Designer mein abhi khuli (aap ne khud kholi ya Gmail se) aur abhi bani nahi -> woh bhi ginti mein
+    for t in getattr(S.HUB, "open_docs", None) or []:
+        m = re.search(r"/document/d/([^/]+)", t.get("url", ""))
+        title = S.norm(S.folder_of(t.get("title", "")))
+        if m and key and (state or {}).get(m.group(1), {}).get("status") != "done"                 and (key in title or key.replace(" ", "") in title.replace(" ", "")):
+            by_name.setdefault(title, m.group(1))
     ids = set(by_name.values())
     for f in found_today(item):
         name = f.get("file", "")

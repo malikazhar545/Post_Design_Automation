@@ -310,3 +310,19 @@ class GmailWatchTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenTabsCountTests(unittest.TestCase):
+    def test_manually_opened_tab_counts_in_24h(self):
+        item = {"name": "Sauna Werk", "found": []}
+        tabs = [{"url": "https://docs.google.com/document/d/abcdefghijklmnopqrstuvwxyz123/edit",
+                 "title": "suana werk 24 10 new.docx - Google Docs"},
+                {"url": "https://docs.google.com/document/d/zzzzzzzzzzzzzzzzzzzzzzzzzz999/edit",
+                 "title": "Sauna Werk 25.docx - Google Docs"}]
+        old = gmail_watch.S
+        gmail_watch.setup(SimpleNamespace(norm=server.norm, folder_of=server.folder_of,
+                                          HUB=SimpleNamespace(open_docs=tabs)))
+        try:
+            self.assertEqual(len(gmail_watch.recent_files(item, {})), 1)  # sirf 'Sauna Werk 25' naam milta hai
+        finally:
+            gmail_watch.setup(old)
