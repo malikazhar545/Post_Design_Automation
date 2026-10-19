@@ -57,6 +57,13 @@ OPTIONAL_ROLES = ("instagram",)                  # sirf jab link ho (Instagram +
 
 # ------------------------------------------------------------- hub / RPC ----
 
+class DayLimit(Exception):
+    """Company ki 24 ghante ki had (6 posts — reels bhi ginti mein) puri: yeh set / file agle din."""
+    def __init__(self, company, need):
+        super().__init__(f"{company}: aaj ki had puri")
+        self.company, self.need = company, need
+
+
 class FileSkipped(BaseException):
     """Dashboard se 'Skip' — chalti file agle safe point (STOP wali jagah) par chhod kar agli file.
     BaseException: beech ke 'except Exception' isay nigal na saken, seedha run_all tak jaye."""
@@ -725,6 +732,8 @@ def parse_doc(doc):
             # reel aap khud banate ho (label se ya video link se pehchani) -> skip, summary mein
             why = f" [video link: {video_link[:60]}]" if video_link and not re.search(r"REEL|VIDEO", label) else ""
             reels.append(f"{s['label']}: {title_of(s)}{why}".strip(": "))
+            if designs:  # reel ki jagah (sets / din ki ginti: reel bhi 6 mein)
+                designs[-1]["reels_after"] = designs[-1].get("reels_after", 0) + 1
             continue
         if s["done"] or s["nopub"]:
             why = "done" if s["done"] else "do not publish"
@@ -996,6 +1005,8 @@ async def parse_with_chatgpt(doc):
         t, status = str(p.get("type", "post")).lower(), str(p.get("status", "todo")).lower()
         if t == "reel":
             reels.append(f"Reel (line {a}): {title}")
+            if designs:
+                designs[-1]["reels_after"] = designs[-1].get("reels_after", 0) + 1
             continue
         if status in ("done", "do_not_publish"):
             done_posts.append(f"Post (line {a}) ({status.replace('_', ' ')}): {title}")
@@ -2230,24 +2241,29 @@ def drop_duplicate(o, outs):
 COMPANY_LOG = OUT_ROOT / "company_log.json"
 
 
-def company_units(company, hours=24):
-    """Pichle 24 ghante mein is company ki kitni 'files' bani (regular file = 1, bari file ka har set = 1)."""
+def company_items(company, hours=24):
+    """Pichle 24 ghante mein is company ki kitni posts bani — reels bhi ginti mein (aap banate ho magar din ki
+    6 mein shamil). Story alag. Purane record (items nahi) = 3 (ek file)."""
     try:
         data = json.loads(COMPANY_LOG.read_text(encoding="utf-8"))
     except Exception:
         return 0
     cut = (datetime.now() - _timedelta(hours=hours)).isoformat()
-    return sum(1 for e in data if e.get("company") == norm(company) and e.get("at", "") >= cut)
+    return sum(e.get("items", 3) for e in data if e.get("company") == norm(company) and e.get("at", "") >= cut)
 
 
-def log_company_unit(company, doc_id, title, part=None):
+def day_items():
+    return CFG.get("company_max_posts_per_day", 6)
+
+
+def log_company_unit(company, doc_id, title, part=None, items=3):
     try:
         data = json.loads(COMPANY_LOG.read_text(encoding="utf-8"))
     except Exception:
         data = []
     cut = (datetime.now() - _timedelta(days=7)).isoformat()
     data = [e for e in data if e.get("at", "") >= cut]  # sirf pichla hafta
-    data.append({"company": norm(company), "doc": doc_id, "file": title, "part": part,
+    data.append({"company": norm(company), "doc": doc_id, "file": title, "part": part, "items": items,
                  "at": datetime.now().isoformat()})
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     COMPANY_LOG.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -2265,17 +2281,32 @@ def file_sets(outs, per=None):
             units[key] = []
             order.append(key)
         units[key].append(o)
-    posts = [k for k in order if units[k][0]["type"] != "story"]
+    # items = posts + reels (doc ki tarteeb mein). Reel set mein jagah leti hai — banti nahi (aap ka kaam)
+    items, seen_d = [], set()
+    for k in order:
+        d = units[k][-1]["d"]
+        if id(d) in seen_d:
+            continue
+        seen_d.add(id(d))
+        if not items:
+            items += [("reel", j) for j in range(d.get("reels_before", 0))]
+        if units[k][0]["type"] != "story":
+            items.append(k)
+        items += [("reel", k, j) for j in range(d.get("reels_after", 0))]
+    for k in order:  # mockup ke doosre unit (same design) bhi post ke saath
+        if units[k][0]["type"] != "story" and k not in items:
+            items.insert(items.index(next(x for x in order if units[x][-1]["d"] is units[k][-1]["d"])) + 1, k)
+    posts = items
     if len(posts) <= per:
-        return [(None, list(outs))]
+        return [(None, list(outs), len(posts))]
     groups = [posts[i:i + per] for i in range(0, len(posts), per)]
     if len(groups) > 2 and len(groups[-1]) == 1:
         tail = groups.pop()
         groups[-1] += tail
     where, n = {}, 0
-    for g in groups:
+    for gi, g in enumerate(groups):
         for k in g:
-            where[k] = (n, groups.index(g))
+            where[k] = (n, gi)
             n += 1
     last = 0
     for k in order:  # story -> pichli post ka set
@@ -2287,7 +2318,7 @@ def file_sets(outs, per=None):
     for gi, g in enumerate(groups):
         a, b = posts.index(g[0]) + 1, posts.index(g[-1]) + 1
         label = f"{a}-{b}" if a != b else str(a)
-        sets.append((label, [o for k in order if where[k][1] == gi for o in units[k]]))
+        sets.append((label, [o for k in order if where[k][1] == gi for o in units[k]], len(g)))
     return sets
 
 
@@ -2312,14 +2343,19 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         log(f"  {already_made} image(s) pichli dafa ban chuki thin — wahan se aage (dobara nahi bana raha)")
     # 3 se zyada posts (Dental 10 posts): ek dafa mein sirf ek set (1-3 + story), phir 2 aur companies,
     # phir agla set (4-6) — ChatGPT ek chat mein lagataar atak jata hai
-    sets = file_sets(outs) if not summary.get("only_post") else [(None, outs)]
+    sets = file_sets(outs) if not summary.get("only_post") else [(None, outs, 0)]
+    need = sets[0][2]
     if len(sets) > 1:
-        todo_sets = [(lbl, so) for lbl, so in sets if any(not o.get("file") for o in so)]
+        todo_sets = [x for x in sets if any(not o.get("file") for o in x[1])]
         if todo_sets:
-            lbl, outs = todo_sets[0]
+            lbl, outs, need = todo_sets[0]
             summary["part"], summary["parts_left"] = lbl, len(todo_sets) - 1
-            log(f"  Bari file ({len(sets)} sets: {', '.join(x for x, _ in sets)}) — is dafa sirf posts {lbl}"
+            log(f"  Bari file ({len(sets)} sets: {', '.join(x[0] for x in sets)}) — is dafa sirf posts {lbl}"
                 + (f"; baqi {len(todo_sets) - 1} set(s) doosri companies ke baad" if len(todo_sets) > 1 else " (aakhri set)"))
+    summary["items"] = need
+    used = company_items(company) if not summary.get("only_post") else 0
+    if used and used + need > day_items():  # company ki aaj ki 6 posts (reel samait) puri -> agle din
+        raise DayLimit(company, need)
 
     async def send_with_limit_retry(message, files):
         for attempt in range(retry_limit + 1):
@@ -3064,6 +3100,8 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
             raise RuntimeError(f"Test selector '{summary['only_post']}': exactly 1 post chahiye, {len(designs)} mili")
         log(f"  (Test: sirf '{summary['only_post']}' -> 1 post)")
     summary["reels"], summary["done"] = reels, done_posts
+    if designs and reels:  # pehli post se pehle wali reels
+        designs[0]["reels_before"] = len(reels) - sum(d.get("reels_after", 0) for d in designs)
     if reels:
         log(f"  {len(reels)} reel skip (aap khud banaoge)")
     if done_posts:
@@ -3485,7 +3523,7 @@ async def run_all(only=None, only_post=None):
         while True:
             for w in list(waiting):  # (tab, files_done jab ruki, kab ruki, company — agar din ki limit)
                 if w[3]:
-                    ready = company_units(w[3]) < CFG.get("company_max_files_per_day", 2)
+                    ready = company_items(w[3][0]) + w[3][1] <= day_items()
                 else:
                     ready = files_done - w[1] >= wait_after or run_time() - w[2] >= wait_max
                 if ready:
@@ -3495,7 +3533,7 @@ async def run_all(only=None, only_post=None):
                     log(f"Ab baari: {folder_of(w[0]['title'])}" + (" (company ki 24 ghante ki limit khul gayi)" if w[3]
                                                                    else " (bari file ka agla set)"))
             HUB.waiting_notes = {norm(folder_of(w[0]["title"])): (
-                "kal — company ki aaj ki 2 files (6 posts) puri" if w[3] else "bari file — agla set doosri companies ke baad")
+                "agle din — company ki aaj ki 6 posts (reels samait) puri" if w[3] else "bari file — agla set doosri companies ke baad")
                 for w in waiting}
             if not queue and not only:
                 # line khaali: summary do, phir har ~8 sec nayi kholi files dekhte raho (live)
@@ -3564,11 +3602,10 @@ async def run_all(only=None, only_post=None):
             if alias:  # file ek naam ki, chat/branding doosri company ki (Ficus Financial -> Beyond the Budget)
                 log(f"  (alias: '{company}' ki file -> '{alias}' ki chat)")
                 company, terms = alias, search_terms(alias)
-            day_max = CFG.get("company_max_files_per_day", 2)
-            if not only and not only_post and doc_id not in released and company_units(company) >= day_max:
-                waiting.append((tab, files_done, run_time(), company))
-                log(f"[{i}/{total}] {folder_of(title)}: {company} ki 24 ghante mein {day_max} files "
-                    f"({day_max * 3} posts) ban chuki — yeh agle din (limit khulte hi khud)")
+            if not only and not only_post and doc_id not in released and company_items(company) >= day_items():
+                waiting.append((tab, files_done, run_time(), (company, 1)))
+                log(f"[{i}/{total}] {folder_of(title)}: {company} ki 24 ghante mein {day_items()} posts "
+                    f"(reels samait) ban chuki — yeh agle din (had khulte hi khud)")
                 i -= 1
                 continue
             log(f"[{i}/{total}] {title}  ->  company: {company}  (search: {' | '.join(terms)})")
@@ -3618,6 +3655,13 @@ async def run_all(only=None, only_post=None):
                         state[doc_id] = {"status": "done", "title": title, "at": datetime.now().isoformat(),
                                          "reels_skipped": summary["reels"]}
                     log(f"[{i}/{total}] DONE: {title}")
+            except DayLimit as e:
+                released.discard(doc_id)
+                waiting.append((tab, files_done, run_time(), (e.company, e.need)))
+                report.remove(summary)
+                summary["skipped"] = True
+                log(f"[{i}/{total}] {folder}: {e.company} ki aaj {company_items(e.company)} posts ban chuki (had "
+                    f"{day_items()}, reels samait) — yeh {'set' if summary.get('part') else 'file'} ({e.need}) agle din")
             except FileSkipped:
                 HUB.skip.discard(norm(folder))
                 summary["skipped"] = True
@@ -3653,8 +3697,8 @@ async def run_all(only=None, only_post=None):
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
             rest_next = bool(summary.get("designs"))  # ChatGPT par kaam hua -> agli file se pehle aaram
             if summary.get("made") and not only_post:
-                log_company_unit(company, doc_id, folder, summary.get("part"))
-            if summary.get("designs") and not summary.get("parts_left"):
+                log_company_unit(company, doc_id, folder, summary.get("part"), summary.get("items", 3))
+            if summary.get("made") and not summary.get("parts_left"):
                 files_done += 1  # bari file ke intezar ki ginti
             HUB.current = {}
             HUB.designer_busy = False

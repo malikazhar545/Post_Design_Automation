@@ -1130,10 +1130,14 @@ def setUpModule():  # ChatGPT ke aaram (minute) tests mein fauran
     global _rest_patch
     _rest_patch = patch.object(server, "chatgpt_rest", new=AsyncMock())
     _rest_patch.start()
+    global _log_patch  # asal Output\company_log.json kabhi na parho
+    _log_patch = patch.object(server, "COMPANY_LOG", server.BASE / "tests" / "_no_company_log.json")
+    _log_patch.start()
 
 
 def tearDownModule():
     _rest_patch.stop()
+    _log_patch.stop()
 
 
 class FileSetsTests(unittest.TestCase):
@@ -1147,7 +1151,7 @@ class FileSetsTests(unittest.TestCase):
             if n in (3, 6):
                 outs.append(self._o("story", f"Story {n}"))
         sets = server.file_sets(outs, per=3)
-        self.assertEqual([l for l, _ in sets], ["1-3", "4-6", "7-10"])
+        self.assertEqual([x[0] for x in sets], ["1-3", "4-6", "7-10"])
         self.assertEqual([o["name"] for o in sets[0][1]], ["Post 1", "Post 2", "Post 3", "Story 3"])
         self.assertEqual(len(sets[2][1]), 4)
 
@@ -1157,12 +1161,24 @@ class FileSetsTests(unittest.TestCase):
 
 
 class CompanyDayLimitTests(unittest.TestCase):
-    def test_units_counted_in_rolling_24h(self):
+    def test_items_counted_in_rolling_24h_reels_included(self):
         with work_directory() as tmp:
             with patch.object(server, "COMPANY_LOG", tmp / "company_log.json"), patch.object(server, "OUT_ROOT", tmp):
-                self.assertEqual(server.company_units("Dental Care"), 0)
-                server.log_company_unit("Dental Care", "d1", "dental 10 posts", "1-3")
-                server.log_company_unit("Dental Care", "d1", "dental 10 posts", "4-6")
-                server.log_company_unit("HR Strategy", "h1", "HR 9")
-                self.assertEqual(server.company_units("dental care"), 2)  # 2 sets = 2 files (6 posts)
-                self.assertEqual(server.company_units("HR Strategy"), 1)
+                self.assertEqual(server.company_items("Dental Care"), 0)
+                server.log_company_unit("Dental Care", "d1", "dental 10 posts", "1-3", 3)
+                server.log_company_unit("Dental Care", "d1", "dental 10 posts", "4-6", 3)
+                server.log_company_unit("HR Strategy", "h1", "HR 9", None, 3)
+                self.assertEqual(server.company_items("dental care"), 6)  # aaj ki had puri
+                self.assertEqual(server.company_items("HR Strategy"), 3)
+
+    def test_reel_takes_a_place_in_the_set(self):
+        outs = []
+        for n in range(1, 8):
+            o = {"type": "post", "name": f"Post {n}", "d": server.new_design("post", f"Post {n}", "x")}
+            if n == 2:
+                o["d"]["reels_after"] = 1  # Post 2 ke baad reel (doc ki 3rd post)
+            outs.append(o)
+        sets = server.file_sets(outs, per=3)
+        self.assertEqual([x[0] for x in sets], ["1-3", "4-6", "7-8"])
+        self.assertEqual([o["name"] for o in sets[0][1]], ["Post 1", "Post 2"])  # reel ne 3rd jagah li
+        self.assertEqual(sets[0][2], 3)  # din ki ginti: 3 (reel samait)

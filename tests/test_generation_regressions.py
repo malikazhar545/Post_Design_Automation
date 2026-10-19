@@ -151,7 +151,11 @@ def setUpModule():  # ChatGPT ke aaram (minute) tests mein fauran
     global _rest_patch
     _rest_patch = patch.object(server, "chatgpt_rest", new=AsyncMock())
     _rest_patch.start()
+    global _log_patch  # asal Output\company_log.json kabhi na parho
+    _log_patch = patch.object(server, "COMPANY_LOG", server.BASE / "tests" / "_no_company_log.json")
+    _log_patch.start()
 
 
 def tearDownModule():
     _rest_patch.stop()
+    _log_patch.stop()
