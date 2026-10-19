@@ -2751,11 +2751,15 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     for o in results:
         if o.get("file") and not o.get("qa_fail"):
             dest = final / f"{o['name'].split(' (')[0]}{o['file'].suffix}"
-            n = 2
+            n, same = 2, False
             while dest.exists():  # same din same company ki doosri file -> naam mein number
+                if dest.read_bytes() == o["file"].read_bytes():
+                    same = True  # wahi image pehle se (resume / dobara) -> "(2)" copy nahi
+                    break
                 dest = final / f"{o['name'].split(' (')[0]} ({n}){o['file'].suffix}"
                 n += 1
-            shutil.copy(o["file"], dest)
+            if not same:
+                shutil.copy(o["file"], dest)
     # Downloads mein SIRF ChatGPT ki final images (content/summary/records sab Output mein rehte hain)
     try:
         if not any(final.iterdir()):
