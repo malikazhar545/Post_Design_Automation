@@ -2096,6 +2096,15 @@ def expand_outputs(designs):
     return outs
 
 
+EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF☀-➿⬀-⯿←-⇿⌀-⏿"
+                      "️‍⃣\U000E0020-\U000E007F]+")
+
+
+def strip_emoji(text):
+    """Heading mein emoji image par nahi chhapne (Single Parent / Pro Channel mein ChatGPT ne emoji bhi bana diye)."""
+    return "\n".join(re.sub(r"[ \t]{2,}", " ", EMOJI_RE.sub("", line)).strip() for line in text.split("\n"))
+
+
 def build_design_message(company, designs, outputs=None, already=()):
     """Message + upload files (usi number se jo message mein likha). Return (msg, files, outputs).
     already = jo files isi chat mein pehle upload ho chuki -> dobara upload nahi, sirf hawala."""
@@ -2142,7 +2151,7 @@ def build_design_message(company, designs, outputs=None, already=()):
                 lines.append(CFG["before_after_slide_note"].format(
                     k=d["slide"], n=file_no(d["image_path"]), label=d["before_after"]))
             if d.get("ba_heading"):
-                lines.append(CFG["before_after_heading_note"] + "\n" + d["ba_heading"] + "\nEND OF EXACT HEADING")
+                lines.append(CFG["before_after_heading_note"] + "\n" + strip_emoji(d["ba_heading"]) + "\nEND OF EXACT HEADING")
             if d.get("website_brand"):
                 brand = d["website_brand"]
                 lines.append(f"Uploaded file {file_no(brand['logo'])} is the verified COMPANY LOGO. Use it exactly; it is not the main photo.")
@@ -2176,7 +2185,7 @@ def build_design_message(company, designs, outputs=None, already=()):
             lines.append(CFG["brief_note"])
         if d["content"] and not d.get("brief"):
             lines.append("EXACT HEADING TO PRINT ON THE IMAGE (every line is required; do not shorten, paraphrase, omit or replace):\n"
-                         + d["content"] + "\nEND OF EXACT HEADING")
+                         + strip_emoji(d["content"]) + "\nEND OF EXACT HEADING")
         elif d["content"]:
             lines.append(d["content"])
         if d.get("ref_text"):
@@ -2277,7 +2286,8 @@ def file_sets(outs, per=None):
     per = per or CFG.get("posts_per_pass", 3)
     units, order = {}, []
     for o in outs:
-        key = ("c", o["d"]["carousel"]) if o["d"].get("carousel") else id(o)
+        # carousel = 1 post; ek product ke dono mockups = 1 post (Wear Wood 10: 3 product ke mockups 3-3 mein bant gaye)
+        key = ("c", o["d"]["carousel"]) if o["d"].get("carousel") else             ("m", id(o["d"])) if str(o.get("type", "")).startswith("mockup") else id(o)
         if key not in units:
             units[key] = []
             order.append(key)
@@ -2294,7 +2304,7 @@ def file_sets(outs, per=None):
         if units[k][0]["type"] != "story":
             items.append(k)
         items += [("reel", k, j) for j in range(d.get("reels_after", 0))]
-    for k in order:  # mockup ke doosre unit (same design) bhi post ke saath
+    for k in order:  # same design ke doosre unit (product post + uske mockups) usi post ke saath
         if units[k][0]["type"] != "story" and k not in items:
             items.insert(items.index(next(x for x in order if units[x][-1]["d"] is units[k][-1]["d"])) + 1, k)
     posts = items

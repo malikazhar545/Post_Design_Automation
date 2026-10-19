@@ -1191,3 +1191,19 @@ class LabelWithPeriodTests(unittest.TestCase):
                "Post 3.\nHeading\nThird heading\nCaption\nc3")
         designs, _, _ = server.parse_doc(doc)
         self.assertEqual([d["label"] for d in designs], ["Post 1", "Post 2", "Post 3"])
+
+
+class MockupAndEmojiTests(unittest.TestCase):
+    def test_three_products_mockups_stay_one_set(self):
+        outs = []
+        for p in (1, 2, 3):
+            d = server.new_design("post", f"Post {p}", "x")
+            outs += [{"type": "mockup_placed", "name": f"Mockup {2 * p - 1}", "d": d},
+                     {"type": "mockup_use", "name": f"Mockup {2 * p}", "d": d}]
+        sets = server.file_sets(outs, per=3)
+        self.assertEqual(len(sets), 1)  # 3 product = 3 posts -> ek hi message (Wear Wood 10: bottle chhoot gayi thi)
+        self.assertEqual(len(sets[0][1]), 6)
+
+    def test_heading_emojis_removed(self):
+        self.assertEqual(server.strip_emoji("🚀 Grow your business 💼✨\nPart 2 ➡️ now ✅ — 50% off"),
+                         "Grow your business\nPart 2 now — 50% off")
