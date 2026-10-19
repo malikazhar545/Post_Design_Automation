@@ -639,7 +639,8 @@ def split_sections(doc):
         m, label_urls = match_label(line)
         d = DATE_RE.match(line)
         if m and cur is not None and not any(x for x in cur["lines"]) and not label_urls \
-                and re.fullmatch(r"\s*(story|stories|reels?|carousel|video)\s*", m.group("label"), re.I) \
+                and re.fullmatch(r"\s*(?:(?:\d+\s*[- ]?\s*)?sec(?:ond)?s?\s+)?(story|stories|reels?|carousel|video)"
+                                 r"(?:\s+(?:text|script))?\s*", m.group("label"), re.I) \
                 and not (m.group("rest") or "").strip():
             # "Post#3" ke foran neeche akela "Story" -> nayi post nahi, pichli post story hai
             cur["label"] += f" ({m.group('label').strip()})"
@@ -731,7 +732,7 @@ def parse_doc(doc):
         video_link = next((u for u in all_urls if VIDEO_LINK_RE.search(u)), None)
         has_image = any(is_image_link(u) or IG_POST_RE.search(u) for u in all_urls)
         if (re.search(r"REEL|VIDEO", label) or (video_link and not has_image)
-                or any(re.match(r"^\W*on[ -]screen reel text\b", line, re.I) for line in s["lines"])):
+                or any(REEL_TEXT_RE.match(line) for line in s["lines"])):
             # reel aap khud banate ho (label se ya video link se pehchani) -> skip, summary mein
             why = f" [video link: {video_link[:60]}]" if video_link and not re.search(r"REEL|VIDEO", label) else ""
             reels.append(f"{s['label']}: {title_of(s)}{why}".strip(": "))
@@ -2126,6 +2127,8 @@ def doc_post_count(designs, reels, done_posts):
     return len(keys) + len(reels) + len(done_posts)
 
 
+# reel ki pehchan: "On-screen reel text", "REEL TEXT", "10-SECOND REEL TEXT:", "Reel script" (Bandz / My gym)
+REEL_TEXT_RE = re.compile(r"^\W*(?:on[ -]screen\s+|\d+\s*[- ]?\s*sec(?:ond)?s?\s+)?reel\s+(?:text|script)\b", re.I)
 LOOSE_LABEL_RE = re.compile(r"^\W*(?:post|story|reel|carousel|video)\s*#?\s*\d+\b", re.I)
 
 
@@ -2347,6 +2350,8 @@ def log_company_unit(company, doc_id, title, part=None, items=3):
         data = []
     cut = (datetime.now() - _timedelta(days=7)).isoformat()
     data = [e for e in data if e.get("at", "") >= cut]  # sirf pichla hafta
+    if any(e.get("doc") == doc_id and e.get("part") == part for e in data):
+        return  # isi file / set ki dobara koshish (adhoori file) -> do dafa nahi ginni (My gym 5 do dafa gini gayi)
     data.append({"company": norm(company), "doc": doc_id, "file": title, "part": part, "items": items,
                  "at": datetime.now().isoformat()})
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -3696,7 +3701,7 @@ async def run_all(only=None, only_post=None):
             if alias:  # file ek naam ki, chat/branding doosri company ki (Ficus Financial -> Beyond the Budget)
                 log(f"  (alias: '{company}' ki file -> '{alias}' ki chat)")
                 company, terms = alias, search_terms(alias)
-            if not only and not only_post and doc_id not in released and company_items(company) >= day_items():
+            if not only and not only_post and doc_id not in released and not doc_items_logged(doc_id)                     and company_items(company) >= day_items():
                 waiting.append((tab, files_done, run_time(), (company, 1)))
                 log(f"[{i}/{total}] {folder_of(title)}: {company} ki {CFG.get('limit_window_hours', 12)} ghante mein {day_items()} posts "
                     f"(reels samait) ban chuki — yeh agle din (had khulte hi khud)")

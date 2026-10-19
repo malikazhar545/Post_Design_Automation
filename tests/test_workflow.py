@@ -1257,3 +1257,12 @@ class RedoNotLimitedTests(unittest.TestCase):
                 server.log_company_unit("Wear Wood", "ww10", "Wear Wood 10", "4-6", 3)
                 self.assertEqual(server.doc_items_logged("ww10"), 6)
                 self.assertEqual(server.doc_items_logged("other"), 0)
+
+
+class ReelTextTests(unittest.TestCase):
+    def test_reel_text_label_under_post_is_a_reel(self):
+        doc = ("Post 7\nREEL TEXT\nWHY BANDS\nCaption\nc\nPost 8\nHeading\nANCHOR\nCaption\nc\n"
+               "Post 11\n10-SECOND REEL TEXT:\n0:00-0:03\nLittle kids\nCAPTION:\nc")
+        designs, reels, _ = server.parse_doc(doc)
+        self.assertEqual([d["label"] for d in designs], ["Post 8"])
+        self.assertEqual(len(reels), 2)
