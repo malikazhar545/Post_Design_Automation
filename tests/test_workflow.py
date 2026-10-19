@@ -1154,3 +1154,15 @@ class FileSetsTests(unittest.TestCase):
     def test_regular_file_not_split(self):
         outs = [self._o("post", f"P{n}") for n in (1, 2, 3)] + [self._o("story", "S")]
         self.assertEqual(server.file_sets(outs, per=3)[0][0], None)
+
+
+class CompanyDayLimitTests(unittest.TestCase):
+    def test_units_counted_in_rolling_24h(self):
+        with work_directory() as tmp:
+            with patch.object(server, "COMPANY_LOG", tmp / "company_log.json"), patch.object(server, "OUT_ROOT", tmp):
+                self.assertEqual(server.company_units("Dental Care"), 0)
+                server.log_company_unit("Dental Care", "d1", "dental 10 posts", "1-3")
+                server.log_company_unit("Dental Care", "d1", "dental 10 posts", "4-6")
+                server.log_company_unit("HR Strategy", "h1", "HR 9")
+                self.assertEqual(server.company_units("dental care"), 2)  # 2 sets = 2 files (6 posts)
+                self.assertEqual(server.company_units("HR Strategy"), 1)

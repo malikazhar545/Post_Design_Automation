@@ -90,6 +90,7 @@ class Hub:
         self.designer_busy = False # docs/images download (Designer ya ChatGPT) -> Gmail scan ruke
         self.rest_until = 0.0      # ChatGPT aaram (dashboard par countdown)
         self.open_docs = []        # Designer ki khuli Google Docs (har 20s) — dashboard line + Gmail ginti
+        self.waiting_notes = {}    # norm(folder) -> kyun ruki (bari file ka set / company ki din ki limit)
         self.rest_reason = ""
 
     def run_status(self):
@@ -2226,6 +2227,32 @@ def drop_duplicate(o, outs):
     return False
 
 
+COMPANY_LOG = OUT_ROOT / "company_log.json"
+
+
+def company_units(company, hours=24):
+    """Pichle 24 ghante mein is company ki kitni 'files' bani (regular file = 1, bari file ka har set = 1)."""
+    try:
+        data = json.loads(COMPANY_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    cut = (datetime.now() - _timedelta(hours=hours)).isoformat()
+    return sum(1 for e in data if e.get("company") == norm(company) and e.get("at", "") >= cut)
+
+
+def log_company_unit(company, doc_id, title, part=None):
+    try:
+        data = json.loads(COMPANY_LOG.read_text(encoding="utf-8"))
+    except Exception:
+        data = []
+    cut = (datetime.now() - _timedelta(days=7)).isoformat()
+    data = [e for e in data if e.get("at", "") >= cut]  # sirf pichla hafta
+    data.append({"company": norm(company), "doc": doc_id, "file": title, "part": part,
+                 "at": datetime.now().isoformat()})
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    COMPANY_LOG.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
 def file_sets(outs, per=None):
     """3 se zyada posts wali file -> sets: [("1-3", outs), ("4-6", outs), ("7-10", outs)].
     Carousel = 1 post (saari slides ek set mein). Story usi set mein jis post ke baad doc mein aati hai.
@@ -3456,12 +3483,20 @@ async def run_all(only=None, only_post=None):
         wait_max = CFG.get("big_file_max_wait_minutes", 30) * 60
         watch_until, reported = None, 0
         while True:
-            for w in list(waiting):  # (tab, files_done jab ruki, kab ruki)
-                if files_done - w[1] >= wait_after or run_time() - w[2] >= wait_max:
+            for w in list(waiting):  # (tab, files_done jab ruki, kab ruki, company — agar din ki limit)
+                if w[3]:
+                    ready = company_units(w[3]) < CFG.get("company_max_files_per_day", 2)
+                else:
+                    ready = files_done - w[1] >= wait_after or run_time() - w[2] >= wait_max
+                if ready:
                     waiting.remove(w)
                     released.add(doc_id_of(w[0]))
                     queue.insert(0, w[0])
-                    log(f"Bari file ka agla set ab: {folder_of(w[0]['title'])}")
+                    log(f"Ab baari: {folder_of(w[0]['title'])}" + (" (company ki 24 ghante ki limit khul gayi)" if w[3]
+                                                                   else " (bari file ka agla set)"))
+            HUB.waiting_notes = {norm(folder_of(w[0]["title"])): (
+                "kal — company ki aaj ki 2 files (6 posts) puri" if w[3] else "bari file — agla set doosri companies ke baad")
+                for w in waiting}
             if not queue and not only:
                 # line khaali: summary do, phir har ~8 sec nayi kholi files dekhte raho (live)
                 if len(report) > reported:
@@ -3516,7 +3551,7 @@ async def run_all(only=None, only_post=None):
                             and str(v.get("at", "")) > str(st.get("at", "")))
                 age = (datetime.now() - datetime.fromisoformat(st["at"])).total_seconds() if st.get("at") else wait_max
                 if since < wait_after and age < wait_max:
-                    waiting.append((tab, files_done - since, run_time() - age))
+                    waiting.append((tab, files_done - since, run_time() - age, None))
                     log(f"[{i}/{total}] {folder_of(title)}: agla set {wait_after} aur files ke baad "
                         f"(ya {wait_max // 60} min) — ChatGPT ko is chat se aaram")
                     i -= 1
@@ -3529,6 +3564,13 @@ async def run_all(only=None, only_post=None):
             if alias:  # file ek naam ki, chat/branding doosri company ki (Ficus Financial -> Beyond the Budget)
                 log(f"  (alias: '{company}' ki file -> '{alias}' ki chat)")
                 company, terms = alias, search_terms(alias)
+            day_max = CFG.get("company_max_files_per_day", 2)
+            if not only and not only_post and doc_id not in released and company_units(company) >= day_max:
+                waiting.append((tab, files_done, run_time(), company))
+                log(f"[{i}/{total}] {folder_of(title)}: {company} ki 24 ghante mein {day_max} files "
+                    f"({day_max * 3} posts) ban chuki — yeh agle din (limit khulte hi khud)")
+                i -= 1
+                continue
             log(f"[{i}/{total}] {title}  ->  company: {company}  (search: {' | '.join(terms)})")
             folder = folder_of(title)
             if norm(folder) in HUB.skip:  # dashboard se skip
@@ -3564,7 +3606,7 @@ async def run_all(only=None, only_post=None):
                     raise RuntimeError("File incomplete — 0 images bani; DONE mark nahi ki")
                 if summary.get("parts_left"):  # bari file ka ek set bana -> baqi sets doosri companies ke baad
                     released.discard(doc_id)
-                    waiting.append((tab, files_done, run_time()))
+                    waiting.append((tab, files_done, run_time(), None))
                     if not only_post:
                         state[doc_id] = {"status": "partial", "title": title, "at": datetime.now().isoformat(),
                                          "part": summary["part"]}
@@ -3610,6 +3652,8 @@ async def run_all(only=None, only_post=None):
             save_state(state)
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
             rest_next = bool(summary.get("designs"))  # ChatGPT par kaam hua -> agli file se pehle aaram
+            if summary.get("made") and not only_post:
+                log_company_unit(company, doc_id, folder, summary.get("part"))
             if summary.get("designs") and not summary.get("parts_left"):
                 files_done += 1  # bari file ke intezar ki ginti
             HUB.current = {}
@@ -3782,7 +3826,8 @@ def queue_list():
             continue
         have.add(norm(f))
         out.append({"file": f, "skip": norm(f) in HUB.skip,
-                    "note": "bari file — agla set baad mein" if st == "partial" else "nayi — agli baari mein line mein"})
+                    "note": HUB.waiting_notes.get(norm(f)) or ("bari file — agla set baad mein" if st == "partial"
+                                                               else "nayi — agli baari mein line mein")})
     return out
 
 
