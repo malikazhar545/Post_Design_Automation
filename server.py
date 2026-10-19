@@ -2241,14 +2241,14 @@ def drop_duplicate(o, outs):
 COMPANY_LOG = OUT_ROOT / "company_log.json"
 
 
-def company_items(company, hours=24):
-    """Pichle 24 ghante mein is company ki kitni posts bani — reels bhi ginti mein (aap banate ho magar din ki
+def company_items(company, hours=None):
+    """Pichle 12 ghante (limit_window_hours) mein is company ki kitni posts bani — reels bhi ginti mein (aap banate ho magar din ki
     6 mein shamil). Story alag. Purane record (items nahi) = 3 (ek file)."""
     try:
         data = json.loads(COMPANY_LOG.read_text(encoding="utf-8"))
     except Exception:
         return 0
-    cut = (datetime.now() - _timedelta(hours=hours)).isoformat()
+    cut = (datetime.now() - _timedelta(hours=hours or CFG.get("limit_window_hours", 12))).isoformat()
     return sum(e.get("items", 3) for e in data if e.get("company") == norm(company) and e.get("at", "") >= cut)
 
 
@@ -3530,10 +3530,10 @@ async def run_all(only=None, only_post=None):
                     waiting.remove(w)
                     released.add(doc_id_of(w[0]))
                     queue.insert(0, w[0])
-                    log(f"Ab baari: {folder_of(w[0]['title'])}" + (" (company ki 24 ghante ki limit khul gayi)" if w[3]
+                    log(f"Ab baari: {folder_of(w[0]['title'])}" + (f" (company ki {CFG.get('limit_window_hours', 12)} ghante ki limit khul gayi)" if w[3]
                                                                    else " (bari file ka agla set)"))
             HUB.waiting_notes = {norm(folder_of(w[0]["title"])): (
-                "agle din — company ki aaj ki 6 posts (reels samait) puri" if w[3] else "bari file — agla set doosri companies ke baad")
+                "baad mein — company ki 12 ghante ki 6 posts (reels samait) puri" if w[3] else "bari file — agla set doosri companies ke baad")
                 for w in waiting}
             if not queue and not only:
                 # line khaali: summary do, phir har ~8 sec nayi kholi files dekhte raho (live)
@@ -3604,7 +3604,7 @@ async def run_all(only=None, only_post=None):
                 company, terms = alias, search_terms(alias)
             if not only and not only_post and doc_id not in released and company_items(company) >= day_items():
                 waiting.append((tab, files_done, run_time(), (company, 1)))
-                log(f"[{i}/{total}] {folder_of(title)}: {company} ki 24 ghante mein {day_items()} posts "
+                log(f"[{i}/{total}] {folder_of(title)}: {company} ki {CFG.get('limit_window_hours', 12)} ghante mein {day_items()} posts "
                     f"(reels samait) ban chuki — yeh agle din (had khulte hi khud)")
                 i -= 1
                 continue

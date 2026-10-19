@@ -74,8 +74,8 @@ def per_day():
 
 
 def _cutoff():
-    """Had pichle 24 GHANTE par (12 baje date badalne se dobara 2 nahi khulti — HR Strategy 10 wala masla)."""
-    return (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    """Had pichle X ghante par (config limit_window_hours, abhi 12) — 12 baje date badalne se nahi (HR Strategy 10 wala masla)."""
+    return (datetime.now() - timedelta(hours=S.CFG.get("limit_window_hours", 12))).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def found_today(item):

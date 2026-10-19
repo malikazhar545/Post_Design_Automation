@@ -159,5 +159,6 @@
   "rest_before_retry_minutes": 2,
   "posts_per_pass": 3,
   "big_file_after_files": 3,
-  "company_max_posts_per_day": 6
+  "company_max_posts_per_day": 6,
+  "limit_window_hours": 12
 }

@@ -320,7 +320,7 @@ class OpenTabsCountTests(unittest.TestCase):
                 {"url": "https://docs.google.com/document/d/zzzzzzzzzzzzzzzzzzzzzzzzzz999/edit",
                  "title": "Sauna Werk 25.docx - Google Docs"}]
         old = gmail_watch.S
-        gmail_watch.setup(SimpleNamespace(norm=server.norm, folder_of=server.folder_of,
+        gmail_watch.setup(SimpleNamespace(norm=server.norm, folder_of=server.folder_of, CFG={},
                                           HUB=SimpleNamespace(open_docs=tabs)))
         try:
             self.assertEqual(len(gmail_watch.recent_files(item, {})), 1)  # sirf 'Sauna Werk 25' naam milta hai
