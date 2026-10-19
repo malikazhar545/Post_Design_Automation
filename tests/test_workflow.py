@@ -1225,3 +1225,21 @@ class CheckerTests(unittest.IsolatedAsyncioTestCase):
     def test_loose_count_sees_headings_even_if_labels_odd(self):
         lines = [(l, None) for l in "Post 1\nHeading\nA\nPost two!!\nHeading\nB\nNext one\nHeading\nC".split("\n")]
         self.assertEqual(server.loose_post_estimate(lines), 3)
+
+
+class NightIdleTests(unittest.TestCase):
+    def test_idle_only_when_nothing_left(self):
+        hub = server.HUB
+        saved = (hub.running, hub.watching, hub.queue_view, hub.current, hub.waiting_limit_only, hub.rest_until)
+        try:
+            hub.running, hub.watching, hub.queue_view, hub.current = True, True, [], {}
+            hub.waiting_limit_only, hub.rest_until = True, 0
+            self.assertTrue(server.run_idle())
+            hub.rest_until = server.time.time() + 60  # agli file se pehle aaram -> kaam baqi
+            self.assertFalse(server.run_idle())
+            hub.rest_until, hub.waiting_limit_only = 0, False  # bari file ka set ruka -> kaam baqi
+            self.assertFalse(server.run_idle())
+            hub.waiting_limit_only, hub.current = True, {"file": "x"}
+            self.assertFalse(server.run_idle())
+        finally:
+            (hub.running, hub.watching, hub.queue_view, hub.current, hub.waiting_limit_only, hub.rest_until) = saved

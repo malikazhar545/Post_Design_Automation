@@ -98,6 +98,8 @@ class Hub:
         self.rest_until = 0.0      # ChatGPT aaram (dashboard par countdown)
         self.open_docs = []        # Designer ki khuli Google Docs (har 20s) — dashboard line + Gmail ginti
         self.waiting_notes = {}    # norm(folder) -> kyun ruki (bari file ka set / company ki din ki limit)
+        self.waiting_limit_only = True  # sirf 12 ghante ki limit wali ruki hain (yeh raat ko intezar nahi karwati)
+        self.no_new_files = False  # raat ka waqt (night_stop_at) guzar gaya -> nayi files line mein nahi
         self.rest_reason = ""
 
     def run_status(self):
@@ -3590,6 +3592,7 @@ async def run_all(only=None, only_post=None):
             HUB.waiting_notes = {norm(folder_of(w[0]["title"])): (
                 "baad mein — company ki 12 ghante ki 6 posts (reels samait) puri" if w[3] else "bari file — agla set doosri companies ke baad")
                 for w in waiting}
+            HUB.waiting_limit_only = all(w[3] for w in waiting)
             if not queue and not only:
                 # line khaali: summary do, phir har ~8 sec nayi kholi files dekhte raho (live)
                 if len(report) > reported:
@@ -3606,7 +3609,7 @@ async def run_all(only=None, only_post=None):
                     break
                 HUB.watching = True
                 await run_sleep(CFG.get("watch_poll_seconds", 8))
-            if (i or not queue) and not only:
+            if (i or not queue) and not only and not HUB.no_new_files:
                 # chalte run mein nayi kholi gayi files bhi line mein (right se left)
                 try:
                     for t in reversed(await HUB.call("designer", "list_doc_tabs")):
@@ -3931,6 +3934,53 @@ def queue_list():
     return out
 
 
+def run_idle():
+    """Koi kaam baqi nahi: run band, ya line khaali + sirf 12 ghante ki limit wali files ruki hain."""
+    if not HUB.running:
+        return True
+    return (HUB.watching and not HUB.queue_view and not HUB.current and HUB.waiting_limit_only
+            and HUB.rest_until <= time.time())
+
+
+async def night_shutdown():
+    """config 'night_stop_at' ("2026-10-20 04:00", PC ka waqt): us waqt Gmail search + nayi files band,
+    jo files line mein hain woh poori banti hain, phir PC shut down (2 minute ki warning; 'shutdown /a' se ruk sakta)."""
+    stopped = False
+    idle_checks = 0
+    while True:
+        await asyncio.sleep(60)
+        at = CFG.get("night_stop_at")
+        if not at:
+            stopped, idle_checks = False, 0
+            continue
+        try:
+            when = datetime.strptime(at, "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        if datetime.now() < when:
+            continue
+        if not stopped:
+            stopped = True
+            HUB.no_new_files = True
+            try:
+                gmail_watch.api_action("gmail_toggle", {"on": "0"})
+            except Exception as e:
+                log(f"(Gmail band nahi hua: {e})")
+            log(f"RAAT {at}: Gmail search aur nayi files band — jo line mein hain woh ban kar PC band hoga")
+            notify("Raat ka waqt", "Gmail search + nayi files band. Baqi files ban kar PC shut down hoga.")
+        idle_checks = idle_checks + 1 if run_idle() else 0
+        if idle_checks >= CFG.get("night_idle_minutes", 3):  # 3 minute lagataar khaali -> pakka khatam
+            log("Saari files ban gayin — PC 2 minute mein shut down (rokna ho to: shutdown /a)")
+            notify("PC shut down", "Saara kaam khatam — PC 2 minute mein band hoga.")
+            write_cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+            write_cfg["night_stop_at"] = ""  # ek dafa ka (agli raat dobara nahi)
+            (BASE / "config.json").write_text(json.dumps(write_cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            CFG["night_stop_at"] = ""
+            import subprocess
+            subprocess.Popen(["shutdown", "/s", "/t", "120", "/c", "Post Automation: saara kaam khatam"])
+            return
+
+
 async def watch_open_docs():
     """Har 20s Designer ki khuli Docs tabs dekho (sirf list — koi tab focus/click nahi): file chalte hue bhi
     aap ki nayi kholi file dashboard ki line mein fauran dikhe; run use agli baari mein line mein lagata hai."""
@@ -3954,6 +4004,7 @@ async def main():
         asyncio.create_task(auto_resume())  # bijli / restart ke baad adhoora kaam khud
         gmail_watch.setup(sys.modules[__name__])
         asyncio.create_task(watch_open_docs())  # nayi kholi files dashboard par fauran
+        asyncio.create_task(night_shutdown())  # raat ka waqt: nayi files band, kaam khatam -> PC band
         asyncio.create_task(gmail_watch.loop())  # dashboard ki Gmail list (OFF ho to kuch nahi karta)
         await asyncio.Future()
 
