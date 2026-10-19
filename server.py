@@ -1379,21 +1379,86 @@ def _from_download(src, dest_noext):
     return path
 
 
-async def screenshot_instagram(url, dest):
-    """INSTAGRAM profile mein post kholo, har slide ki image ka screenshot (caption nahi).
-    Last slide sirf kisi company ka CTA ho to skip."""
+def instagram_embed_urls(html):
+    """Instagram ki embed page se images: album (GraphSidecar) -> har slide ka link (tarteeb se), warna post ki image.
+    Album ke links JSON ke andar kai dafa escape hote hain (slash aur %) -> saaf karo."""
+    import html as _html
+
+    def clean(u):
+        u = re.sub(r"\\+/", "/", u)
+        u = re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), u)
+        return _html.unescape(u.replace("\\", ""))
+    if "GraphSidecar" in html:
+        urls = []
+        for u in re.findall(r'display_url\W+(https.+?)\\*"', html):
+            u = clean(u)
+            if u not in urls:
+                urls.append(u)
+        if len(urls) > 1:
+            return urls
+    m = re.search(r'class="EmbeddedMediaImage"[^>]*?src="([^"]+)"', html)
+    return [clean(m.group(1))] if m else []
+
+
+async def instagram_from_embed(url, dest):
+    """Screen ke baghair: embed page se saari slides ki asal image files (Instagram dheere load ho tab bhi)."""
     from PIL import Image
-    tab = await HUB.call("instagram", "open_tab", url=url, active=True)
+    m = re.search(r"instagram\.com/(?:[\w.]+/)?(p|reel|tv)/([\w-]+)", url)
+    if not m:
+        return []
+    r = await HUB.call("instagram", "fetch", url=f"https://www.instagram.com/{m.group(1)}/{m.group(2)}/embed/captioned/")
+    if r["status"] != 200:
+        return []
     shots = []
+    for k, u in enumerate(instagram_embed_urls(base64.b64decode(r["b64"]).decode("utf-8", "replace")), 1):
+        img_r = await HUB.call("instagram", "fetch", url=u)
+        if img_r["status"] != 200 or len(img_r["b64"]) < 8000:
+            return []  # ek slide bhi na mile -> screen wala tareeqa (koi slide chhootni nahi)
+        path = dest.with_name(f"{dest.stem}_slide{k}.png")
+        Image.open(io.BytesIO(base64.b64decode(img_r["b64"]))).convert("RGB").save(path)
+        shots.append(path)
+    return shots
+
+
+async def screenshot_instagram(url, dest):
+    """INSTAGRAM profile se post ki har slide ki image (caption nahi). Pehle embed page se (tez, poora album),
+    na mile to post khol kar screen se. Last slide sirf kisi company ka CTA ho to skip."""
+    from PIL import Image
+    shots = []
+    try:
+        shots = await instagram_from_embed(url, dest)
+    except Exception as e:
+        log(f"    (Instagram embed se nahi mila: {e} — post khol kar screen se)")
+    if shots:
+        log(f"    Instagram: {len(shots)} slide(s) seedha image file se" + (" (album)" if len(shots) > 1 else ""))
+        if len(shots) > 1 and await is_cta_slide(shots[-1]):
+            shots[-1].rename(shots[-1].with_name(shots[-1].stem + "_SKIPPED_CTA.png"))
+            shots.pop()
+        return shots
+    tab = await HUB.call("instagram", "open_tab", url=url, active=True)
     try:
         await run_sleep(5)
         await HUB.exec("instagram", tab, "ig_prepare")
         await run_sleep(2)
         for slide in range(1, 21):
-            rect = await HUB.exec("instagram", tab, "ig_media")
+            # Instagram kabhi bohot dheere load hota hai (HR 8: 7s mein khaali page, 30s baad image) ->
+            # pehli slide ke liye ~60s intezar (beech mein ek reload), agli slide ke liye ~10s
+            rect, waits = None, (24 if slide == 1 else 4)
+            for w in range(waits):
+                rect = await HUB.exec("instagram", tab, "ig_media")
+                if rect and rect.get("w", 0) > 100:
+                    break
+                rect = None
+                if slide == 1 and w == 12:
+                    log("    (Instagram page load nahi hua — reload kar ke dobara intezar)")
+                    await HUB.call("instagram", "navigate", tabId=tab, url=url)
+                    await run_sleep(5)
+                if slide == 1 and w % 4 == 3:
+                    await HUB.exec("instagram", tab, "ig_prepare")
+                await run_sleep(2.5)
             if not rect:
                 if not shots:
-                    raise RuntimeError("Instagram post ki image nahi mili (Instagram profile mein login hai?)")
+                    raise RuntimeError("Instagram post ki image nahi mili (60s intezar ke baad bhi — Instagram profile mein login hai?)")
                 break
             path = None
             if rect.get("src", "").startswith("http"):  # asal image file (poori, kati hui nahi)
@@ -1449,12 +1514,17 @@ async def is_cta_slide(path):
         log(f"  (OCR nahi chala: {e}) — last slide rakh raha hoon")
         return False
     low = " " + text.lower() + " "
-    hits = [k for k in CFG["cta_keywords"] if k in low]
-    hits += ["@handle"] if re.search(r"@[a-z0-9_.]{3,}", low) else []
-    hits += ["phone"] if re.search(r"\+?\d[\d\s\-()]{8,}\d", low) else []
-    hits += ["website"] if re.search(r"\b[\w\-]+\.(com|co|org|net|in|uk|pk|io)\b", low) else []
+    # website / www / @handle / phone aksar HAR slide ke footer mein hote hain (HR 8: asal aakhri slide
+    # "website" ki wajah se skip ho gayi) -> yeh akele CTA nahi; CTA = asal jumla (follow us, book now...)
+    strong = [k for k in CFG["cta_keywords"] if k in low and k.strip() != "www."]
+    contact = ["www"] if "www." in low else []
+    contact += ["@handle"] if re.search(r"@[a-z0-9_.]{3,}", low) else []
+    contact += ["phone"] if re.search(r"\+?\d[\d\s\-()]{8,}\d", low) else []
+    contact += ["website"] if re.search(r"\b[\w\-]+\.(com|co|org|net|in|uk|pk|io)\b", low) else []
+    hits = strong + contact
     words = len(text.split())
-    cta = bool(hits) and (words <= CFG["cta_max_words"] or len(hits) >= 3)
+    cta = (bool(strong) and (words <= CFG["cta_max_words"] or len(strong) >= 2)) \
+        or (bool(contact) and words <= CFG.get("cta_contact_only_words", 12))
     log(f"  Last slide OCR ({words} words, CTA hits: {hits}) -> {'SKIP' if cta else 'rakh li'}")
     return cta
 

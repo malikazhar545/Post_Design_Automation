@@ -1100,3 +1100,16 @@ class BeforeAfterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstagramEmbedTests(unittest.TestCase):
+    def test_album_links_unescaped_in_order(self):
+        esc = lambda n: ('display_url\\":\\"https:\\\/\\\/cdn.example\\\/v\\\/' + n
+                         + '.webp?a=1&key=Mz\\u00253D\\u00253D&b=2\\"')
+        html = "GraphSidecar " + esc("s1") + esc("s1") + esc("s2") + esc("s3")
+        self.assertEqual(server.instagram_embed_urls(html),
+                         [f"https://cdn.example/v/{n}.webp?a=1&key=Mz%3D%3D&b=2" for n in ("s1", "s2", "s3")])
+
+    def test_single_post_image(self):
+        html = 'GraphImage <img class="EmbeddedMediaImage" alt="x" src="https://cdn.example/one.jpg?a=1&amp;b=2" />'
+        self.assertEqual(server.instagram_embed_urls(html), ["https://cdn.example/one.jpg?a=1&b=2"])
