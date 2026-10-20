@@ -162,7 +162,7 @@
   "company_max_posts_per_day": 6,
   "limit_window_hours": 12,
   "recheck_after_files": 2,
-  "night_stop_at": "2026-10-20 04:00",
+  "night_stop_at": "",
   "night_idle_minutes": 3,
   "model_rotation": [
     "East Asian woman, mid 20s",
