@@ -1276,3 +1276,20 @@ class PipeLabelTests(unittest.TestCase):
         designs, _, _ = server.parse_doc(doc)
         self.assertEqual(sum(1 for d in designs if d.get("carousel")), 2)  # Post 1 = 2 slides
         self.assertEqual([d["label"] for d in designs if not d.get("carousel")], ["Post 2", "Post 3"])
+
+
+class LinksAndBeforeAfterTests(unittest.TestCase):
+    def test_work_in_progress_is_before(self):
+        doc = ("POST 1 | KITCHEN\nHEADLINE:\nWORK IN PROGRESS / AFTER\n"
+               "Work in progress: https://drive.google.com/file/d/AAAAAAAAAAAAAAAAAAAAAAAAA/view\n"
+               "After:\nhttps://drive.google.com/file/d/BBBBBBBBBBBBBBBBBBBBBBBBB/view\nCAPTION:\nc")
+        designs, _, _ = server.parse_doc(doc)
+        self.assertEqual([d.get("before_after") for d in designs], ["BEFORE", "AFTER"])
+
+    def test_share_google_is_image_and_carousel_gets_post_image(self):
+        self.assertTrue(server.is_image_link("https://share.google/qvxAXMiQIL5HCoGLz"))
+        doc = ("Post 1 | Informational carousel\nhttps://share.google/syeZDqz1N4n7YRzEl\nHeadline:\nH\n"
+               "Carousel slides:\nSlide 1\nA\nSlide 2\nB\nCaption:\nc")
+        designs, _, _ = server.parse_doc(doc)
+        self.assertEqual(designs[0]["image_url"], "https://share.google/syeZDqz1N4n7YRzEl")
+        self.assertIsNone(designs[1]["image_url"])

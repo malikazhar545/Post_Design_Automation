@@ -476,7 +476,7 @@ IMAGE_HOST_RE = re.compile(
     r"istockphoto\.com|gettyimages\.|stock\.adobe\.com|dreamstime\.com|123rf\.com|depositphotos\.com|rawpixel\.com|"
     r"vecteezy\.com|images\.openai\.com|oaiusercontent\.com|gstatic\.com/images|googleusercontent\.com|"
     r"drive\.google\.com/(file|open|uc)|docs\.google\.com/uc|google\.[a-z.]+/imgres|google\.[a-z.]+/search\?.*(tbm=isch|udm=2)|"
-    r"imgur\.com|ibb\.co|wixstatic\.com|squarespace-cdn\.com)", re.I)
+    r"imgur\.com|ibb\.co|wixstatic\.com|squarespace-cdn\.com|share\.google/|images\.app\.goo\.gl)", re.I)
 IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp|gif|avif|heic)$", re.I)
 
 
@@ -757,8 +757,12 @@ def parse_doc(doc):
         slides = split_slides(body)
         if slides:
             carousel_no += 1
+            # poore carousel ki ek image (slides se upar, Dental: share.google link) -> pehli slide ki photo
+            post_img = next((u for u in urls if not IG_POST_RE.search(u) and is_image_link(u)
+                             and all(u != sl["image"] for sl in slides)), None)
             for k, sl in enumerate(slides, 1):
-                d = new_design("post", f"{s['label']} - Slide {k}", sl["text"], sl["image"], ig_url)
+                img = sl["image"] or (post_img if k == 1 else None)
+                d = new_design("post", f"{s['label']} - Slide {k}", sl["text"], img, ig_url)
                 d["carousel"], d["slide"], d["section"] = carousel_no, k, s["label"]
                 if not sl["text"] and ig_url:
                     d["ig_slide"] = k  # text Instagram post ki isi number ki slide se
@@ -879,7 +883,9 @@ def is_image_prompt(line):
     return len(line.split()) >= 10 and len(IMAGE_PROMPT_RE.findall(line)) >= 2
 
 
-BA_RE = re.compile(r"^\W*(?P<tag>before|after)\b(?:\s*(?:photo|image|pic(?:ture)?))?\W*(?P<rest>.*)$", re.I)
+# "Work in progress" / "WIP" / "During" = BEFORE photo (Aim Tech: sirf WIP wali photo li jati thi, After chhoot jati)
+BA_RE = re.compile(r"^\W*(?P<tag>before|after|work\s*in\s*progress|in\s*progress|wip|during)\b"
+                   r"(?:\s*(?:photo|image|pic(?:ture)?))?\W*(?P<rest>.*)$", re.I)
 
 
 def before_after_links(body):
@@ -892,7 +898,7 @@ def before_after_links(body):
         urls = [u for u in urls if is_image_link(u) and not IG_POST_RE.search(u)]
         m = BA_RE.match(line)
         if m and (urls or not URL_RE.sub("", m.group("rest")).strip(" :-–")):
-            tag = m.group("tag").lower()
+            tag = "after" if m.group("tag").lower() == "after" else "before"
             if urls:
                 found.setdefault(tag, urls[0])
                 pending = None
@@ -1146,6 +1152,11 @@ async def download_image(url, dest_noext):
     m = re.search(r"drive\.google\.com/(?:file/d/|open\?id=|uc\?.*?id=)([\w-]+)", url)
     if m:  # Google Drive file
         url = f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    if re.search(r"share\.google/|images\.app\.goo\.gl", url):  # Google share link -> google.com/imgres?imgurl=...
+        try:
+            url = await asyncio.to_thread(resolve_redirect, url)
+        except Exception as e:
+            log(f"    (share link nahi khula: {e})")
     m = re.search(r"[?&]imgurl=([^&]+)", url)
     if m:  # Google Images link -> asal image ka url us ke andar hota hai
         from urllib.parse import unquote
@@ -1191,6 +1202,15 @@ async def download_image(url, dest_noext):
         raise RuntimeError(f"Image download nahi hui: {url} ({e})")
     finally:
         await HUB.call("designer", "close_tab", tabId=tab)
+
+
+def resolve_redirect(url):
+    """share.google / goo.gl -> aakhri link (Dental 10 posts ki images isi tarah thin)."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.geturl()
 
 
 def direct_get(url):
