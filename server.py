@@ -844,14 +844,17 @@ def parse_doc(doc):
         ba = before_after_links(body)
         if ba and not s["brief"]:
             # heading sirf "BEFORE / AFTER" ho to woh label hi hai; asal heading ho to slide 1 / comparison par
-            extra = content_text if re.sub(r"(?i)\b(before|after|vs)\b|[\W_]+", "", content_text) else ""
+            # "Work in progress: <link>" / "After:" lines heading nahi (photo par chhap jati)
+            ba_text = "\n".join(l for l in content if not BA_RE.match(l) and not URL_RE.search(l)).strip()
+            extra = ba_text if re.sub(r"(?i)\b(before|after|vs|work\s*in\s*progress|in\s*progress|wip|during)\b|[\W_]+",
+                                      "", ba_text) else ""
             if CFG.get("before_after_mode", "carousel") == "comparison":
-                d = new_design("post", s["label"], "\n".join(x for x in (extra, "BEFORE", "AFTER") if x), ba[0])
+                d = new_design("post", s["label"], "\n".join(x for x in (extra, ba[2], "AFTER") if x), ba[0])
                 d.update(section=s["label"], before_after="pair", after_url=ba[1], after_path=None, ba_heading=extra)
                 designs.append(d)
                 continue
             carousel_no += 1
-            for k, (tag, url) in enumerate(zip(("BEFORE", "AFTER"), ba), 1):
+            for k, (tag, url) in enumerate(zip((ba[2], "AFTER"), ba[:2]), 1):
                 head = extra if k == 1 else ""
                 d = new_design("post", f"{s['label']} - {tag.title()}", "\n".join(x for x in (head, tag) if x), url)
                 d.update(carousel=carousel_no, slide=k, section=s["label"], before_after=tag, ba_heading=head)
@@ -890,7 +893,7 @@ BA_RE = re.compile(r"^\W*(?P<tag>before|after|work\s*in\s*progress|in\s*progress
 
 def before_after_links(body):
     """'Before: link' / 'After: link' (ya label ki agli line par link) -> (before_url, after_url); dono na hon -> None."""
-    found, pending = {}, None
+    found, pending, labels = {}, None, {}
     for line, _ in body:
         if CAPTION_RE.match(line):
             break
@@ -899,6 +902,8 @@ def before_after_links(body):
         m = BA_RE.match(line)
         if m and (urls or not URL_RE.sub("", m.group("rest")).strip(" :-–")):
             tag = "after" if m.group("tag").lower() == "after" else "before"
+            if tag == "before":  # jo writer ne likha wohi photo par chhape: "WORK IN PROGRESS" ya "BEFORE"
+                labels.setdefault("before", re.sub(r"\s+", " ", m.group("tag")).upper())
             if urls:
                 found.setdefault(tag, urls[0])
                 pending = None
@@ -909,7 +914,7 @@ def before_after_links(body):
             pending = None
         elif line.strip():
             pending = None
-    return (found["before"], found["after"]) if len(found) == 2 else None
+    return (found["before"], found["after"], labels.get("before", "BEFORE")) if len(found) == 2 else None
 
 
 SLIDE_RE = re.compile(r"^\W*slide\s*(\d+)\W*?(?:[:\-–]\s*(?P<rest>.*))?$", re.I)

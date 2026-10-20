@@ -1284,7 +1284,7 @@ class LinksAndBeforeAfterTests(unittest.TestCase):
                "Work in progress: https://drive.google.com/file/d/AAAAAAAAAAAAAAAAAAAAAAAAA/view\n"
                "After:\nhttps://drive.google.com/file/d/BBBBBBBBBBBBBBBBBBBBBBBBB/view\nCAPTION:\nc")
         designs, _, _ = server.parse_doc(doc)
-        self.assertEqual([d.get("before_after") for d in designs], ["BEFORE", "AFTER"])
+        self.assertEqual([d.get("before_after") for d in designs], ["WORK IN PROGRESS", "AFTER"])  # before photo
 
     def test_share_google_is_image_and_carousel_gets_post_image(self):
         self.assertTrue(server.is_image_link("https://share.google/qvxAXMiQIL5HCoGLz"))
@@ -1293,3 +1293,18 @@ class LinksAndBeforeAfterTests(unittest.TestCase):
         designs, _, _ = server.parse_doc(doc)
         self.assertEqual(designs[0]["image_url"], "https://share.google/syeZDqz1N4n7YRzEl")
         self.assertIsNone(designs[1]["image_url"])
+
+
+class BeforeLabelTests(unittest.TestCase):
+    def test_label_follows_writer_wording(self):
+        wip = ("POST 1 | KITCHEN\nHEADLINE:\nWORK IN PROGRESS / AFTER\n"
+               "Work in progress: https://drive.google.com/file/d/AAAAAAAAAAAAAAAAAAAAAAAAA/view\n"
+               "After:\nhttps://drive.google.com/file/d/BBBBBBBBBBBBBBBBBBBBBBBBB/view\nCAPTION:\nc")
+        d, _, _ = server.parse_doc(wip)
+        self.assertEqual([x["before_after"] for x in d], ["WORK IN PROGRESS", "AFTER"])
+        self.assertEqual(d[0]["content"], "WORK IN PROGRESS")  # link wali lines heading mein nahi
+        before = ("Post 1\nHeading\nKitchen glow-up\nBefore: https://drive.google.com/file/d/AAAAAAAAAAAAAAAAAAAAAAAAA/view\n"
+                  "After: https://drive.google.com/file/d/BBBBBBBBBBBBBBBBBBBBBBBBB/view\nCaption\nc")
+        d, _, _ = server.parse_doc(before)
+        self.assertEqual([x["before_after"] for x in d], ["BEFORE", "AFTER"])
+        self.assertEqual(d[0]["ba_heading"], "Kitchen glow-up")
