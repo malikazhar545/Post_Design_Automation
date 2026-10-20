@@ -2677,6 +2677,36 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
             log(f"  (style reference nahi gaye: {e} — un ke baghair)")
             refs = []
 
+    switched = []
+
+    async def maybe_switch_chat():
+        """File ke beech ChatGPT baar baar atka (3 dafa: 10-min hang / Try again / wahi image) -> chat bhaari:
+        FAURAN nayi chat (instructions + style refs) aur baqi images wahin. Purani 'OLD - ...'."""
+        nonlocal cid
+        if switched or HUB.stuck_events < CFG.get("chat_switch_mid_file", 3) or summary.get("only_post"):
+            return
+        switched.append(1)
+        try:
+            cid = await refresh_company_chat(waseem, company, cid, company)
+        except ChatLimit:
+            raise
+        except Exception as e:
+            log(f"  (beech mein nayi chat nahi bani: {e} — isi chat mein jaari)")
+            return
+        HUB.stuck_events = 0
+        uploaded.clear()  # nayi chat mein photos / logo dobara lagenge
+        uploaded.update(d["website_brand"]["logo"] for d in designs if d.get("website_brand"))
+        if refs:
+            try:
+                n = "1" if len(refs) == 1 else f"1 to {len(refs)}"
+                await send_with_limit_retry(CFG["style_ref_message"].format(n=n, company=company), refs)
+                await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
+                uploaded.update(refs)
+                remember_chat("waseem", company, cid, company, refs=[r.name for r in refs])
+            except Exception as e:
+                log(f"  (nayi chat mein style reference nahi gaye: {e})")
+        log("  Baqi images nayi chat mein")
+
     # BATCH (aap ka apna tareeqa — ChatGPT ki image limit kam lagti hai):
     #   posts 3-3 ke sets mein (max_posts_per_message), saari stories EK message, har carousel EK message (saari slides),
     #   saare product mockups EK message (5 products = 10 images). Ek message mein max 10 images.
@@ -2717,6 +2747,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                 continue  # sirf ek image -> neeche normal single message
             carousel = key.startswith("carousel")
             if any(not o.get("file") for o in batch):
+                await maybe_switch_chat()
                 await rest_break(carousel)
             try:
                 # carousel skip nahi hota: jo slides na banen -> usi carousel ka "continue" message (2 dafa tak)
@@ -2725,6 +2756,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                     if not todo_b:
                         break
                     if attempt:  # 'Try again' / slides chhoot gayin -> fauran dobara nahi: aaram + hard refresh
+                        await maybe_switch_chat()  # bohot atka -> baqi slides nayi chat mein
                         await chatgpt_rest(CFG.get("rest_before_retry_minutes", 2), "baqi slides se pehle, phir hard refresh")
                         try:
                             await waseem.goto(f"{CHATGPT}/c/{cid}")
@@ -2784,6 +2816,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         if limit_hit:  # limit retry ke baad bhi -> baqi images pending (jo bani hain woh save hongi)
             summary.setdefault("image_fail", []).append(f"{who(output)}: ChatGPT limit — nahi bani")
             continue
+        await maybe_switch_chat()
         await rest_break(single=True)
         try:
             before = set(await page_image_refs(waseem, cid))

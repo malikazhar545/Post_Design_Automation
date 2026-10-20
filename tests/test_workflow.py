@@ -1413,3 +1413,18 @@ class SplitOnlyLaterSetsTests(unittest.IsolatedAsyncioTestCase):
         with work_directory() as tmp, patch.dict(server.CFG, {"final_dir": str(tmp)}):
             d = server.final_dir("dental care for you", "dental care for you 10 posts 3 (1-3)")
             self.assertEqual(d.name, "10 (1-3)")
+
+
+class MidFileChatSwitchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_switch_called_when_stuck_three_times(self):
+        server.HUB.stuck_events = 3
+        refresh = AsyncMock(return_value="newcid")
+        designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in (1, 2)]
+        with patch.object(server, "refresh_company_chat", new=refresh), \
+             patch.dict(server.CFG, {"chat_switch_mid_file": 3, "batch_mode": True}):
+            t = ResilienceTests()
+            sends = []
+            saved, summary, error = await t._run_capture(designs, [["a", "b"]], sends)
+        server.HUB.stuck_events = 0
+        refresh.assert_awaited_once()
+        self.assertEqual(len(saved), 2)
