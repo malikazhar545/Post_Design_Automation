@@ -2,6 +2,7 @@ import asyncio
 import re
 import shutil
 import unittest
+from types import SimpleNamespace
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -1338,3 +1339,22 @@ class ComparisonStyleTests(unittest.TestCase):
             self.assertEqual(picks, [0, 1, 2, 0])
             server.pick_model({})  # model ginti style ginti ko mita na de
             self.assertEqual(server.json.loads((tmp / "m.json").read_text())["ba_style_next"], 4)
+
+
+class ChatRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_heavy_chat_replaced_and_old_renamed(self):
+        with work_directory() as tmp, patch.object(server, "CHAT_REFRESH_FILE", tmp / "cr.json"), \
+             patch.dict(server.CFG, {"refresh_chat_companies": []}):
+            server.mark_chat_refresh("Dental Care")
+            self.assertIn("dental care", server.chat_refresh_pending())
+            chat = SimpleNamespace(goto=AsyncMock(), send=AsyncMock(return_value=1.0), wait_done=AsyncMock(),
+                                   conversation=AsyncMock(return_value={}), api=AsyncMock())
+            with patch.object(server, "assistant_text_after", return_value="BRAND RULES " * 40), \
+                 patch.object(server, "create_waseem_chat", new=AsyncMock(return_value="new1")) as create, \
+                 patch.object(server, "run_sleep", new=AsyncMock()), patch.object(server, "notify"), \
+                 patch.object(server, "log"):
+                cid = await server.refresh_company_chat(chat, "Dental Care", "old1", "Dental Care")
+            self.assertEqual(cid, "new1")
+            self.assertIn("BRAND RULES", create.await_args.args[2])
+            chat.api.assert_awaited_with("/backend-api/conversation/old1", "PATCH", {"title": "OLD - Dental Care"})
+            self.assertNotIn("dental care", server.chat_refresh_pending())  # ek dafa hi

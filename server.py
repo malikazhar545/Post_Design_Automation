@@ -98,6 +98,7 @@ class Hub:
         self.rest_until = 0.0      # ChatGPT aaram (dashboard par countdown)
         self.open_docs = []        # Designer ki khuli Google Docs (har 20s) — dashboard line + Gmail ginti
         self.waiting_notes = {}    # norm(folder) -> kyun ruki (bari file ka set / company ki din ki limit)
+        self.stuck_events = 0      # is file mein ChatGPT kitni dafa atka (refresh / Try again / wahi image dobara)
         self.waiting_limit_only = True  # sirf 12 ghante ki limit wali ruki hain (yeh raat ko intezar nahi karwati)
         self.no_new_files = False  # raat ka waqt (night_stop_at) guzar gaya -> nayi files line mein nahi
         self.rest_reason = ""
@@ -1768,8 +1769,8 @@ class Chat:
 
         def score(title):
             t = norm(title)
-            if len(t) < 3:
-                return 0
+            if len(t) < 3 or re.match(r"^\W*old\b", title or "", re.I):
+                return 0  # "OLD - Dental..." = bhaari / atki purani chat -> kabhi nahi kholni
             tc = t.replace(" ", "")  # "E liquid" / "E-Liquid" == "eliquid"
             best = 0
             for k, nt in enumerate(nterms):  # pehle wale terms (lambe) zyada behtar
@@ -2097,8 +2098,78 @@ async def create_waseem_chat(waseem, company, instructions, files=()):
     return cid
 
 
+CHAT_REFRESH_FILE = OUT_ROOT / "chat_refresh.json"
+
+
+def chat_refresh_pending():
+    """Kin companies ki chat bhaari / atki hai -> agli file se pehle nayi chat (config + khud pakdi hui)."""
+    try:
+        auto = json.loads(CHAT_REFRESH_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        auto = []
+    return {norm(c) for c in list(auto) + list(CFG.get("refresh_chat_companies") or [])}
+
+
+def mark_chat_refresh(company, add=True):
+    try:
+        data = json.loads(CHAT_REFRESH_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = []
+    data = [c for c in data if norm(c) != norm(company)] + ([company] if add else [])
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    CHAT_REFRESH_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    if not add and any(norm(c) == norm(company) for c in CFG.get("refresh_chat_companies") or []):
+        # config wali list ek dafa ki -> nayi chat ban gayi to naam hata do (har file par nayi chat na bane)
+        cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+        cfg["refresh_chat_companies"] = [c for c in cfg.get("refresh_chat_companies", []) if norm(c) != norm(company)]
+        (BASE / "config.json").write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+        CFG["refresh_chat_companies"] = cfg["refresh_chat_companies"]
+
+
+async def refresh_company_chat(waseem, company, old_cid, old_title):
+    """Bhaari / baar baar atakti chat (Dental Care): usi chat se poori instructions lo -> Waseem mein NAYI chat
+    (instructions + naam) -> purani ka naam 'OLD - ...' (script phir kabhi nahi kholti)."""
+    log(f"  {company}: chat bhaari / atki — instructions le kar NAYI chat bana raha hoon")
+    await waseem.goto(f"{CHATGPT}/c/{old_cid}")
+    sent_at = await waseem.send(CFG["wajid_ask_message"])
+    await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
+    text = ""
+    for _ in range(3):
+        await run_sleep(4)
+        conv = await waseem.conversation(old_cid)
+        text = assistant_text_after(conv, sent_at)
+        if len(text) >= 300:
+            break
+    if len(text) < 300:  # jawab na aaya -> chat banate waqt di gayi instructions (pehla message)
+        text = existing_instructions(conv) or next(
+            (p for m in ordered_messages(conv) if m["author"]["role"] == "user"
+             for p in (m.get("content") or {}).get("parts") or [] if isinstance(p, str) and len(p) >= 300), "")
+    if len(text) < 300:
+        raise RuntimeError(f"'{company}' ki purani chat se instructions nahi mili — purani chat hi chalegi")
+    cid = await create_waseem_chat(waseem, company, text)
+    try:
+        await waseem.api(f"/backend-api/conversation/{old_cid}", "PATCH", {"title": f"OLD - {old_title}"})
+        if "waseem" in CHAT_LIST_CACHE:
+            for c in CHAT_LIST_CACHE["waseem"][1]:
+                if c.get("id") == old_cid:
+                    c["title"] = f"OLD - {old_title}"
+    except Exception as e:
+        log(f"  (purani chat ka naam nahi badla: {e} — memory nayi chat ki hai, phir bhi nayi hi khulegi)")
+    mark_chat_refresh(company, add=False)
+    log(f"  Nayi chat tayyar; purani ka naam 'OLD - {old_title}' (ab nahi khulegi)")
+    notify("Nayi ChatGPT chat", f"{company}: purani chat bhaari thi — nayi chat bana di, purani 'OLD - {old_title}'.")
+    return cid
+
+
 async def resolve_company_chat(waseem, company, terms, doc_text, out_dir):
     cid, found = await waseem.find_chat(terms, company, doc_text)
+    if cid and norm(company) in chat_refresh_pending():
+        try:
+            return await refresh_company_chat(waseem, company, cid, found), None
+        except ChatLimit:
+            raise
+        except Exception as e:
+            log(f"  (nayi chat nahi bani: {e} — purani chat se hi)")
     if cid:
         log(f"  Waseem mein chat mili: \"{found}\"")
         return cid, None
@@ -2389,6 +2460,7 @@ def drop_duplicate(o, outs):
         if other is not o and other.get("file") and Path(other["file"]) != Path(o["file"]) \
                 and Path(other["file"]).exists() and digest(other["file"]) == mine:
             log(f"  ✘ {o['name']}: yeh {other['name']} wali image hi hai (ChatGPT ne dobara di) — nahi gini")
+            HUB.stuck_events += 1
             try:
                 Path(o["file"]).unlink()
             except Exception:
@@ -2926,6 +2998,7 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
                 break
             refreshes += 1
             log(f"  ChatGPT {stuck_mins} minute se atka hai — tab refresh ({refreshes}/{max_refreshes})")
+            HUB.stuck_events += 1
             notify("ChatGPT atak gaya", f"{stuck_mins} minute se image nahi aayi — tab refresh kar raha hoon.", sticky=False)
             try:
                 await waseem.goto(f"{CHATGPT}/c/{cid}")
@@ -2965,10 +3038,12 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
             if tr.get("found"):
                 if new_ids:
                     log(f"  ChatGPT ne 'Try again' dikhaya — jo {len(new_ids)} image(s) ban kar dikh rahi hain woh save kar raha hoon")
+                    HUB.stuck_events += 1
                     break
                 if retry_clicks < 2:
                     retry_clicks += 1
                     log(f"  ChatGPT par 'Try again' — khud click kar raha hoon ({retry_clicks}/2)")
+                    HUB.stuck_events += 1
                     try:
                         await HUB.exec(waseem.role, waseem.tab, "turn_retry", True, timeout=30)
                     except Exception as e:
@@ -3809,6 +3884,7 @@ async def run_all(only=None, only_post=None):
             await wait_for_internet()  # net nahi -> yahin ruko (file fail nahi)
             report.append(summary)
             HUB.current = {"file": folder, "company": company, "i": i, "total": total, "since": time.time()}
+            HUB.stuck_events = 0
             HUB.watching = False
             try:
                 if doc_id in preparation_errors:
@@ -3882,6 +3958,10 @@ async def run_all(only=None, only_post=None):
             save_state(state)
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
             rest_next = bool(summary.get("designs"))  # ChatGPT par kaam hua -> agli file se pehle aaram
+            if HUB.stuck_events >= CFG.get("chat_refresh_after_stucks", 2) and not only_post:
+                # is chat mein baar baar atka -> agli dafa isi company ki NAYI chat (purani 'OLD - ...')
+                mark_chat_refresh(company)
+                log(f"  {company}: is file mein ChatGPT {HUB.stuck_events} dafa atka — agli file se pehle nayi chat banegi")
             if summary.get("made") and not only_post and not summary.get("redo"):
                 log_company_unit(company, doc_id, folder, summary.get("part"), summary.get("items", 3))
             if summary.get("made") and not summary.get("parts_left"):

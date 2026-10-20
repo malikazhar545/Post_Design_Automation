@@ -183,5 +183,9 @@
     "INSET style: the {after_label} photo fills the whole design; the {before_label} photo sits as a small rounded inset (about 35-40% width) in a top corner with a thin white border and a tiny red '{before_label}' badge on it; my logo small in the opposite top corner.",
     "TOP / BOTTOM style: {before_label} photo on top, {after_label} photo below, separated by a thin white band across the middle; in that band small red handwritten-style text '{before_label_lc} ↑' on the left and '{after_label_lc} ↓' on the right.",
     "SLIDER style: {before_label} photo on the left half, {after_label} photo on the right half, a thin white vertical divider in the middle with a round before/after slider handle (◀ ● ▶) on it; '{before_label}' and '{after_label}' in clean white capitals at the top of each half."
+  ],
+  "chat_refresh_after_stucks": 2,
+  "refresh_chat_companies": [
+    "dental care for you"
   ]
 }
