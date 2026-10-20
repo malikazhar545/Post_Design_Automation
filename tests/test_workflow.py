@@ -1325,3 +1325,16 @@ class BeforeAfterModeTests(unittest.TestCase):
         with patch.dict(server.CFG, {"before_after_mode": "carousel"}):
             d, _, _ = server.parse_doc(self._doc("POST 1 | KITCHEN"))
         self.assertEqual(len(d), 2)  # kuch na likha -> carousel
+
+
+class ComparisonStyleTests(unittest.TestCase):
+    def test_styles_rotate_and_keep_model_count(self):
+        with work_directory() as tmp, patch.object(server, "MODEL_FILE", tmp / "m.json"):
+            picks = []
+            for _ in range(4):
+                d = {"ba_label": "WORK IN PROGRESS"}
+                server.pick_ba_style(d)
+                picks.append(d["ba_style"])
+            self.assertEqual(picks, [0, 1, 2, 0])
+            server.pick_model({})  # model ginti style ginti ko mita na de
+            self.assertEqual(server.json.loads((tmp / "m.json").read_text())["ba_style_next"], 4)

@@ -2159,16 +2159,41 @@ def pick_model(d):
         return d["model"]
     rot = CFG["model_rotation"]
     try:
-        n = json.loads(MODEL_FILE.read_text(encoding="utf-8")).get("next", 0)
+        data = json.loads(MODEL_FILE.read_text(encoding="utf-8"))
     except Exception:
-        n = 0
+        data = {}
+    n = data.get("next", 0)
     d["model"] = rot[n % len(rot)]
+    data["next"] = n + 1  # baqi ginti (comparison style) bhi isi file mein — mita ni do
     try:
         OUT_ROOT.mkdir(parents=True, exist_ok=True)
-        MODEL_FILE.write_text(json.dumps({"next": n + 1}), encoding="utf-8")
+        MODEL_FILE.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
     return d["model"]
+
+
+def pick_ba_style(d):
+    """Comparison post ka layout baari baari (aap ke approved Aim Tech designs: inset / upar-neeche / slider).
+    Ginti file mein yaad -> agli comparison agla style. Ek post = ek hi style (dobara bhejne par bhi)."""
+    styles = CFG.get("before_after_comparison_styles") or []
+    if not styles:
+        return ""
+    if "ba_style" not in d:
+        try:
+            data = json.loads(MODEL_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        n = data.get("ba_style_next", 0)
+        d["ba_style"] = n % len(styles)
+        data["ba_style_next"] = n + 1
+        try:
+            MODEL_FILE.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
+    b = d.get("ba_label", "BEFORE")
+    return styles[d["ba_style"] % len(styles)].format(before_label=b, after_label="AFTER",
+                                                     before_label_lc=b.lower(), after_label_lc="after")
 
 
 def doc_post_count(designs, reels, done_posts):
@@ -2270,7 +2295,8 @@ def build_design_message(company, designs, outputs=None, already=()):
             # before/after: dono asal photos zaroori, label chhota (bara heading nahi)
             if d["before_after"] == "pair":
                 lines.append(CFG["before_after_comparison_note"].format(
-                    b=file_no(d["image_path"]), a=file_no(d["after_path"]), before_label=d.get("ba_label", "BEFORE")))
+                    b=file_no(d["image_path"]), a=file_no(d["after_path"]), before_label=d.get("ba_label", "BEFORE"),
+                    style=pick_ba_style(d)))
             else:
                 lines.append(CFG["before_after_slide_note"].format(
                     k=d["slide"], n=file_no(d["image_path"]), label=d["before_after"]))
