@@ -1388,3 +1388,28 @@ class DocSplitTests(unittest.TestCase):
             d = server.final_dir("dental care for you", "dental care for you 10 posts 3 (4-6)")
             self.assertEqual(d.name, "10 (4-6)")
             self.assertEqual(d.parent.name, "dental care for you")
+
+
+class SplitOnlyLaterSetsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_original_keeps_first_set_new_docs_for_rest(self):
+        lines = []
+        for n in range(1, 11):
+            lines += [f"Post {n} | Kind", "Headline:", f"H{n}", "Caption:", "c"]
+        doc = [(l, l.startswith("Post ")) for l in lines]
+        designs, _, _ = server.parse_doc(doc)
+        sets = server.file_sets(server.expand_outputs(designs), per=3)
+        made = []
+
+        async def fake_create(title, secs):
+            made.append((title, [s["label"] for s in secs]))
+            return f"id{len(made)}"
+        with patch.object(server, "create_part_doc", new=fake_create), patch.object(server, "log"):
+            parts = await server.split_doc_into_parts("dental 10 posts 3", doc, sets)
+        self.assertEqual(made, [("dental 10 posts 3 (4-6)", ["Post 4", "Post 5", "Post 6"]),
+                                ("dental 10 posts 3 (7-10)", ["Post 7", "Post 8", "Post 9", "Post 10"])])
+        self.assertEqual([t for t, _ in parts], ["dental 10 posts 3 (4-6)", "dental 10 posts 3 (7-10)"])
+
+    def test_original_set_folder_name(self):
+        with work_directory() as tmp, patch.dict(server.CFG, {"final_dir": str(tmp)}):
+            d = server.final_dir("dental care for you", "dental care for you 10 posts 3 (1-3)")
+            self.assertEqual(d.name, "10 (1-3)")

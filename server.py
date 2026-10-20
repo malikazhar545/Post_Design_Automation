@@ -2895,10 +2895,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
             log(f"  ✔ {o['name']}")
 
     # ---- final images -> Downloads\<date>\<company>\ (sirf images, stories bhi) ----
-    final = final_dir(company, summary.get("file"))
-    if summary.get("part"):  # bari file ka set -> apna folder (1-3, 4-6, 7-10)
-        final = final / summary["part"]
-        final.mkdir(parents=True, exist_ok=True)
+    # bari file ka set -> folder "10 (1-3)" (file number + set, andar sub-folder nahi)
+    final = final_dir(company, summary.get("file", "") + (f" ({summary['part']})" if summary.get("part") else ""))
     for o in results:
         if o.get("file") and not o.get("qa_fail"):
             dest = final / f"{o['name'].split(' (')[0]}{o['file'].suffix}"
@@ -3268,12 +3266,28 @@ async def create_part_doc(title, sections):
     raise RuntimeError(f"nayi doc '{title}' mein posts paste nahi hui (len {want})")
 
 
+SPLITS_FILE = OUT_ROOT / "splits.json"
+
+
+def load_splits():
+    try:
+        return json.loads(SPLITS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_splits(data):
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    SPLITS_FILE.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
 async def split_doc_into_parts(folder, doc, sets):
-    """Bari file (Dental 10 posts) -> nayi Google Docs '<file> (1-3)', '(4-6)', '(7-10)' — har ek alag file
+    """Bari file (Dental 10 posts) ke AGLE sets -> nayi Google Docs '<file> (4-6)', '(7-10)' — har ek alag file
     (record alag, folder alag, beech mein doosri companies). Return [(title, doc id)]."""
-    parts = part_sections(doc, sets)
+    parts = part_sections(doc, sets)[1:]  # pehla set asal file hi banati hai
+    sets = sets[1:]
     made = []
-    log(f"  Bari file: {len(sets)} hisse ({', '.join(s[0] for s in sets)}) — har hissa nayi Google Doc mein")
+    log(f"  Bari file: agle sets ({', '.join(s[0] for s in sets)}) nayi Google Docs mein")
     HUB.designer_busy = True
     try:
         for (lbl, _, _), secs in zip(sets, parts):
@@ -3462,12 +3476,21 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
     if designs and reels:  # pehli post se pehle wali reels
         designs[0]["reels_before"] = len(reels) - sum(d.get("reels_after", 0) for d in designs)
     # 3 se zyada posts -> Designer mein nayi Google Docs (1-3, 4-6, 7-10) — har hissa alag file ban kar banega
-    already_started = load_progress().get(doc_id) or load_state().get(doc_id, {}).get("status") == "partial"
-    if CFG.get("split_big_docs", True) and not summary.get("only_post") and not PART_RE.search(summary.get("file", "")) \
-            and not already_started:  # purane tareeqe se aadhi bani file (Dental) -> wahi chalne do, dobara na bane
+    # asal file khud pehla set (1-3) banti hai; sirf AGLE sets (4-6, 7-10) nayi docs mein (khaali/Untitled doc kabhi nahi)
+    if CFG.get("split_big_docs", True) and not summary.get("only_post") and not PART_RE.search(summary.get("file", "")):
         sets = file_sets(expand_outputs(designs))
         if len(sets) > 1:
-            raise DocSplit(await split_doc_into_parts(summary["file"], doc, sets))
+            splits = load_splits()
+            already_started = load_progress().get(doc_id) or load_state().get(doc_id, {}).get("status") == "partial"
+            if doc_id not in splits and not already_started:
+                splits[doc_id] = await split_doc_into_parts(summary["file"], doc, sets)
+                save_splits(splits)
+            if doc_id in splits:  # (dobara chale to nayi docs dobara nahi banti)
+                keep = {id(o["d"]) for o in sets[0][1]}
+                designs = [d for d in designs if id(d) in keep]
+                summary["part"] = sets[0][0]
+                summary["split_into"] = [t for t, _ in splits[doc_id]]
+                log(f"  Yeh file sirf posts {sets[0][0]} banayegi; baqi: {', '.join(summary['split_into'])}")
     if reels:
         log(f"  {len(reels)} reel skip (aap khud banaoge)")
     if done_posts:
@@ -4038,6 +4061,8 @@ async def run_all(only=None, only_post=None):
                         clear_progress(doc_id)  # file poori -> adhoori images ka record khatam
                         state[doc_id] = {"status": "done", "title": title, "at": datetime.now().isoformat(),
                                          "reels_skipped": summary["reels"]}
+                        if summary.get("split_into"):
+                            state[doc_id]["split_into"] = summary["split_into"]
                         rechecks.append((doc_id, tab["tabId"], folder, summary.get("sections"), files_done))
                     log(f"[{i}/{total}] DONE: {title}")
             except DocSplit as e:
