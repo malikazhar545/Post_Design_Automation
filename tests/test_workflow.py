@@ -1358,3 +1358,33 @@ class ChatRefreshTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("BRAND RULES", create.await_args.args[2])
             chat.api.assert_awaited_with("/backend-api/conversation/old1", "PATCH", {"title": "OLD - Dental Care"})
             self.assertNotIn("dental care", server.chat_refresh_pending())  # ek dafa hi
+
+
+class DocSplitTests(unittest.TestCase):
+    def test_ten_posts_split_into_three_docs_with_whole_carousel(self):
+        lines = []
+        for n in range(1, 11):
+            lines.append(f"Post {n} | Kind {n}")
+            if n == 1:
+                lines += ["Headline:", "H1", "Carousel slides:", "Slide 1", "A", "Slide 2", "B", "Caption:", "c"]
+            else:
+                lines += ["Headline:", f"H{n}", "Caption:", "c"]
+        doc = [(l, l.startswith("Post ")) for l in lines]
+        designs, _, _ = server.parse_doc(doc)
+        sets = server.file_sets(server.expand_outputs(designs), per=3)
+        self.assertEqual([s[0] for s in sets], ["1-3", "4-6", "7-10"])
+        parts = server.part_sections(doc, sets)
+        self.assertEqual([[s["label"] for s in p] for p in parts],
+                         [["Post 1", "Post 2", "Post 3"], ["Post 4", "Post 5", "Post 6"],
+                          ["Post 7", "Post 8", "Post 9", "Post 10"]])
+        html, text = server.part_html(parts[0])
+        self.assertIn("<b>Post 1 | Kind 1</b>", html)
+        self.assertIn("Slide 2", text)  # carousel ki saari slides isi doc mein
+        again, _, _ = server.parse_doc([(l, None) for l in text.split("\n")])
+        self.assertEqual(sum(1 for d in again if d.get("carousel")), 2)
+
+    def test_part_folder_is_file_number_with_range(self):
+        with work_directory() as tmp, patch.dict(server.CFG, {"final_dir": str(tmp)}):
+            d = server.final_dir("dental care for you", "dental care for you 10 posts 3 (4-6)")
+            self.assertEqual(d.name, "10 (4-6)")
+            self.assertEqual(d.parent.name, "dental care for you")

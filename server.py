@@ -57,6 +57,16 @@ OPTIONAL_ROLES = ("instagram",)                  # sirf jab link ho (Instagram +
 
 # ------------------------------------------------------------- hub / RPC ----
 
+PART_RE = re.compile(r"\s*\((\d+(?:-\d+)?)\)\s*$")  # "dental care 10 posts 3 (4-6)" -> bari file ka hissa
+
+
+class DocSplit(Exception):
+    """Bari file nayi Google Docs (hisson) mein baant di: asal file khud nahi banti, hisse alag files ban kar."""
+    def __init__(self, parts):
+        super().__init__(f"{len(parts)} hisson mein baant di")
+        self.parts = parts
+
+
 class DayLimit(Exception):
     """Company ki 24 ghante ki had (6 posts — reels bhi ginti mein) puri: yeh set / file agle din."""
     def __init__(self, company, need):
@@ -2588,6 +2598,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     # 3 se zyada posts (Dental 10 posts): ek dafa mein sirf ek set (1-3 + story), phir 2 aur companies,
     # phir agla set (4-6) — ChatGPT ek chat mein lagataar atak jata hai
     sets = file_sets(outs) if not summary.get("only_post") else [(None, outs, 0)]
+    if PART_RE.search(summary.get("file", "")):  # bari file ka hissa (nayi doc "... (7-10)") = poori ek file
+        sets = [(None, outs, sum(x[2] for x in sets))]
     need = sets[0][2]
     if len(sets) > 1:
         todo_sets = [x for x in sets if any(not o.get("file") for o in x[1])]
@@ -3187,11 +3199,94 @@ def file_number(company, file_name):
     return m.group(0).strip("-") if m else None
 
 
+def part_sections(doc, sets):
+    """Doc ke sections ko sets (1-3, 4-6...) mein baanto. Reel / story / done wale section pichli post ke saath."""
+    set_of = {}
+    for gi, (_, outs, _) in enumerate(sets):
+        for o in outs:
+            d = o["d"]
+            set_of[d.get("section") if d.get("carousel") else d["label"]] = gi
+    parts, cur = [[] for _ in sets], 0
+    for s in split_sections(doc):
+        cur = set_of.get(s["label"], cur)
+        parts[cur].append(s)
+    return parts
+
+
+def part_html(sections):
+    """Sections -> Google Doc mein paste ke liye HTML (label aur bold lines bold)."""
+    import html as _html
+    rows = []
+    for s in sections:
+        label = s["label"] + (f" | {s['desc']}" if s.get("desc") else "")
+        rows.append(f"<p><b>{_html.escape(label)}</b></p>")
+        for line, bold in zip(s["lines"], s["bold"]):
+            if not line:
+                continue
+            t = _html.escape(line)
+            rows.append(f"<p><b>{t}</b></p>" if bold else f"<p>{t}</p>")
+    text = "\n".join(re.sub(r"<[^>]+>", "", _html.unescape(r)) for r in rows)
+    return "".join(rows), text
+
+
+async def create_part_doc(title, sections):
+    """Designer profile mein nayi Google Doc: naam + posts paste. Return doc id. Paste ka sabot: doc dobara parh kar."""
+    html, text = part_html(sections)
+    tab = await HUB.call("designer", "open_tab", url="https://docs.google.com/document/create", active=True)
+    doc_id = None
+    for _ in range(40):
+        await run_sleep(1.5)
+        info = await HUB.call("designer", "tab_info", tabId=tab) or {}
+        m = re.search(r"/document/d/([\w-]{20,})", info.get("url", ""))
+        if m and await HUB.exec("designer", tab, "gdoc_ready"):
+            doc_id = m.group(1)
+            break
+    if not doc_id:
+        raise RuntimeError("nayi Google Doc nahi khuli")
+    await HUB.exec("designer", tab, "gdoc_set_title", title)
+    await run_sleep(1.5)
+    want = len(sections[0]["label"]) if sections else 1
+    for attempt in range(2):
+        await HUB.exec("designer", tab, "gdoc_paste", html, text)
+        await run_sleep(5)
+        try:
+            got = "\n".join(l for l, _ in await fetch_doc(tab, doc_id))
+        except Exception:
+            got = ""
+        if norm(sections[0]["label"]) in norm(got) if sections else got.strip():
+            return doc_id
+        log(f"    (doc mein paste nazar nahi aaya{' — dobara' if not attempt else ''})")
+    raise RuntimeError(f"nayi doc '{title}' mein posts paste nahi hui (len {want})")
+
+
+async def split_doc_into_parts(folder, doc, sets):
+    """Bari file (Dental 10 posts) -> nayi Google Docs '<file> (1-3)', '(4-6)', '(7-10)' — har ek alag file
+    (record alag, folder alag, beech mein doosri companies). Return [(title, doc id)]."""
+    parts = part_sections(doc, sets)
+    made = []
+    log(f"  Bari file: {len(sets)} hisse ({', '.join(s[0] for s in sets)}) — har hissa nayi Google Doc mein")
+    HUB.designer_busy = True
+    try:
+        for (lbl, _, _), secs in zip(sets, parts):
+            if not secs:
+                continue
+            title = f"{folder} ({lbl})"
+            doc_id = await create_part_doc(title, secs)
+            made.append((title, doc_id))
+            log(f"    Nayi doc bani: {title}")
+    finally:
+        HUB.designer_busy = False
+    return made
+
+
 def final_dir(company, file_name=None):
     """Downloads\\<date>\\<company>\\<file number>\\ — ek company ki kai files alag alag folder mein."""
     base = Path(CFG.get("final_dir") or (Path.home() / "Downloads")).expanduser()
     d = base / datetime.now().strftime("%Y-%m-%d") / re.sub(r'[<>:"/\\|?*]', "", company).strip()
-    sub = file_number(company, file_name)
+    part = PART_RE.search(file_name or "")
+    sub = file_number(company, PART_RE.sub("", file_name) if part else file_name)
+    if part:  # bari file ka hissa (nayi doc "... (4-6)") -> ek hi folder "10 (4-6)" (andar sub-folder nahi)
+        sub = f"{sub} ({part.group(1)})" if sub else part.group(1)
     if sub:
         d = d / re.sub(r'[<>:"/\\|?*]', "", sub).strip(" .")
     d.mkdir(parents=True, exist_ok=True)
@@ -3357,6 +3452,13 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
     summary["sections"] = doc_post_count(designs, reels, done_posts)  # checker: baad mein dobara gin kar milao
     if designs and reels:  # pehli post se pehle wali reels
         designs[0]["reels_before"] = len(reels) - sum(d.get("reels_after", 0) for d in designs)
+    # 3 se zyada posts -> Designer mein nayi Google Docs (1-3, 4-6, 7-10) — har hissa alag file ban kar banega
+    already_started = load_progress().get(doc_id) or load_state().get(doc_id, {}).get("status") == "partial"
+    if CFG.get("split_big_docs", True) and not summary.get("only_post") and not PART_RE.search(summary.get("file", "")) \
+            and not already_started:  # purane tareeqe se aadhi bani file (Dental) -> wahi chalne do, dobara na bane
+        sets = file_sets(expand_outputs(designs))
+        if len(sets) > 1:
+            raise DocSplit(await split_doc_into_parts(summary["file"], doc, sets))
     if reels:
         log(f"  {len(reels)} reel skip (aap khud banaoge)")
     if done_posts:
@@ -3773,6 +3875,11 @@ async def run_all(only=None, only_post=None):
         # bari file ka set bana -> agla set tab jab 2 aur files ban jayen (ya 30 min koi file na aaye)
         waiting, released, files_done = [], set(), 0
         rechecks = []  # (doc_id, tab_id, folder, kitni posts bani, files_done) — 2 files baad dobara gin kar check
+        recent = []  # aakhri bani companies (company gap)
+
+        def tab_company(t):
+            c = company_from_title(t["title"])
+            return company_alias(c) or c
         wait_after = CFG.get("big_file_after_files", 2)
         wait_max = CFG.get("big_file_max_wait_minutes", 30) * 60
         watch_until, reported = None, 0
@@ -3862,6 +3969,13 @@ async def run_all(only=None, only_post=None):
             if alias:  # file ek naam ki, chat/branding doosri company ki (Ficus Financial -> Beyond the Budget)
                 log(f"  (alias: '{company}' ki file -> '{alias}' ki chat)")
                 company, terms = alias, search_terms(alias)
+            gap = CFG.get("company_gap_files", 2)
+            if not only and not only_post and gap and norm(company) in recent[-gap:]                     and any(norm(tab_company(t)) not in recent[-gap:] for t in queue):
+                # ek company ki file ke baad 2 doosri companies, phir isi ki agli (Dental ke hisse lagataar nahi)
+                queue.append(tab)
+                log(f"[{i}/{total}] {folder_of(title)}: {company} abhi bani — pehle {gap} doosri companies, phir yeh")
+                i -= 1
+                continue
             if not only and not only_post and doc_id not in released and not doc_items_logged(doc_id)                     and company_items(company) >= day_items():
                 waiting.append((tab, files_done, run_time(), (company, 1)))
                 log(f"[{i}/{total}] {folder_of(title)}: {company} ki {CFG.get('limit_window_hours', 12)} ghante mein {day_items()} posts "
@@ -3917,6 +4031,15 @@ async def run_all(only=None, only_post=None):
                                          "reels_skipped": summary["reels"]}
                         rechecks.append((doc_id, tab["tabId"], folder, summary.get("sections"), files_done))
                     log(f"[{i}/{total}] DONE: {title}")
+            except DocSplit as e:
+                # asal bari file khud nahi banti — hisse nayi docs (tabs) hain, agli baari line mein aa jayengi
+                report.remove(summary)
+                summary["skipped"] = True
+                if not only_post:
+                    state[doc_id] = {"status": "done", "title": title, "at": datetime.now().isoformat(),
+                                     "split": [d for _, d in e.parts], "reels_skipped": []}
+                log(f"[{i}/{total}] {folder}: {len(e.parts)} nayi docs mein baant di "
+                    f"({', '.join(t for t, _ in e.parts)}) — har ek alag file ban kar banegi")
             except DayLimit as e:
                 released.discard(doc_id)
                 waiting.append((tab, files_done, run_time(), (e.company, e.need)))
@@ -3962,6 +4085,8 @@ async def run_all(only=None, only_post=None):
                 # is chat mein baar baar atka -> agli dafa isi company ki NAYI chat (purani 'OLD - ...')
                 mark_chat_refresh(company)
                 log(f"  {company}: is file mein ChatGPT {HUB.stuck_events} dafa atka — agli file se pehle nayi chat banegi")
+            if summary.get("made") and not only_post:
+                recent.append(norm(company))  # company gap: 2 doosri companies ke baad hi isi ki agli file
             if summary.get("made") and not only_post and not summary.get("redo"):
                 log_company_unit(company, doc_id, folder, summary.get("part"), summary.get("items", 3))
             if summary.get("made") and not summary.get("parts_left"):

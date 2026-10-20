@@ -424,6 +424,42 @@ const PAGE = {
       tag: e.tagName, id: e.id, testid: e.getAttribute('data-testid'), aria: e.getAttribute('aria-label'),
       text: (e.innerText || '').trim().slice(0, 40), disabled: !!e.disabled, visible: !!e.offsetParent }));
   },
+  // ---- bari file ke hisse: nayi Google Doc mein posts paste (Designer profile) ----
+  gdoc_ready: function () {
+    // Docs editor tayyar? (text likhne wala chhupa iframe)
+    const ifr = document.querySelector('iframe.docs-texteventtarget-iframe');
+    return !!(ifr && ifr.contentDocument && document.querySelector('.kix-appview-editor'));
+  },
+  gdoc_paste: function (html, text) {
+    // Docs khud paste event se HTML (bold samait) leta hai — clipboard ke baghair
+    const ifr = document.querySelector('iframe.docs-texteventtarget-iframe');
+    if (!ifr || !ifr.contentDocument) return { ok: false, error: 'editor nahi mila' };
+    const target = ifr.contentDocument.querySelector('[contenteditable="true"]') || ifr.contentDocument.body;
+    target.focus();
+    const dt = new DataTransfer();
+    dt.setData('text/html', html);
+    dt.setData('text/plain', text);
+    const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+    target.dispatchEvent(ev);
+    return { ok: true };
+  },
+  gdoc_set_title: function (title) {
+    const input = document.querySelector('input.docs-title-input');
+    if (!input) return false;
+    input.focus();
+    input.value = title;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+    input.blur();
+    return true;
+  },
+  gdoc_text_len: function () {
+    // paste hua? editor ke text ki lambai
+    const pages = document.querySelectorAll('.kix-page, .kix-canvas-tile-content, [role="textbox"]');
+    let n = 0;
+    for (const p of pages) n += (p.innerText || p.textContent || '').length;
+    return n;
+  },
   click_text: function (sel, text) {
     // dikhne wala element jiska text hoobahoo yeh ho (jaise ChatGPT ka "Chat" / "Work" toggle)
     const e = [...document.querySelectorAll(sel)].find(x => x.offsetParent && (x.innerText || '').trim() === text);

@@ -187,5 +187,7 @@
   "chat_refresh_after_stucks": 2,
   "refresh_chat_companies": [
     "dental care for you"
-  ]
+  ],
+  "split_big_docs": true,
+  "company_gap_files": 2
 }
