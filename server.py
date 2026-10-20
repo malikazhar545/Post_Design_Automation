@@ -612,6 +612,10 @@ def match_label(line):
     urls = [u.group(0) for u in URL_RE.finditer(line)]
     probe = URL_RE.sub(" ", line).strip(" -–:\t") if urls else line
     probe = re.sub(r"(\d)\.\s*$", r"\1", probe)  # "Post 2." (Angela 15: neeche wali 2 posts chhoot gayi thin)
+    # "Post 2 | Did you know?" -> label "Post 2" ("|" ke baad sirf qisam ka naam; Dental 10 posts: 7 posts chhoot gayi thin)
+    probe = re.sub(r"^(\W*(?:posts?|story|stories|reels?|carousel|video)\s*#?\s*\d+)\s*\|.*$", r"\1", probe, flags=re.I)
+    if re.match(r"^\W*carousel\s+slides?\W*$", probe, re.I):
+        return None, urls  # "Carousel slides:" post ke andar ka sub-heading hai, nayi post nahi
     m = SECTION_RE.match(probe)
     if m and (m.group("rest") is not None or len(probe.split()) <= 6) \
             and not HEADING_RE.match(probe) and not CAPTION_RE.match(probe):

@@ -1266,3 +1266,13 @@ class ReelTextTests(unittest.TestCase):
         designs, reels, _ = server.parse_doc(doc)
         self.assertEqual([d["label"] for d in designs], ["Post 8"])
         self.assertEqual(len(reels), 2)
+
+
+class PipeLabelTests(unittest.TestCase):
+    def test_post_label_with_pipe_and_carousel_slides_subheading(self):
+        doc = ("Post 1 | Informational carousel\nHeadline:\nH1\nCarousel slides:\nSlide 1\nA\nSlide 2\nB\nCaption:\nc\n"
+               "Post 2 | Did you know?\nHeadline:\nH2\nCaption:\nc\n"
+               "Post 3 | Myth vs fact\nHeadline:\nH3\nCaption:\nc")
+        designs, _, _ = server.parse_doc(doc)
+        self.assertEqual(sum(1 for d in designs if d.get("carousel")), 2)  # Post 1 = 2 slides
+        self.assertEqual([d["label"] for d in designs if not d.get("carousel")], ["Post 2", "Post 3"])
