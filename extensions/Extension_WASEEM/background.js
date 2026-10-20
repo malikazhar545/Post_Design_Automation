@@ -444,12 +444,16 @@ const PAGE = {
     return { ok: true };
   },
   gdoc_set_title: function (title) {
+    // insaan ki tarah: sab select -> naya naam type (execCommand) -> Enter; sirf value badalne se Docs save nahi karta
     const input = document.querySelector('input.docs-title-input');
     if (!input) return false;
     input.focus();
-    input.value = title;
+    input.select();
+    if (!document.execCommand('insertText', false, title)) input.value = title;
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    for (const t of ['keydown', 'keypress', 'keyup'])
+      input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
     input.blur();
     return true;
   },

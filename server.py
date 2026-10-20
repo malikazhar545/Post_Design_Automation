@@ -3232,7 +3232,9 @@ def part_html(sections):
 async def create_part_doc(title, sections):
     """Designer profile mein nayi Google Doc: naam + posts paste. Return doc id. Paste ka sabot: doc dobara parh kar."""
     html, text = part_html(sections)
-    tab = await HUB.call("designer", "open_tab", url="https://docs.google.com/document/create", active=True)
+    # naam bananay ke waqt hi (script se baad mein naam badalna Docs nahi maanta — Dental 1-3 "Untitled" reh gaya)
+    tab = await HUB.call("designer", "open_tab", active=True,
+                         url="https://docs.google.com/document/create?title=" + quote(title))
     doc_id = None
     for _ in range(40):
         await run_sleep(1.5)
@@ -3243,8 +3245,15 @@ async def create_part_doc(title, sections):
             break
     if not doc_id:
         raise RuntimeError("nayi Google Doc nahi khuli")
-    await HUB.exec("designer", tab, "gdoc_set_title", title)
-    await run_sleep(1.5)
+    for _ in range(5):  # naam sach mein laga? (Dental 1-3: "Untitled document" reh gaya tha) -> tab ka title dekho
+        await HUB.call("designer", "focus_tab", tabId=tab)
+        await HUB.exec("designer", tab, "gdoc_set_title", title)
+        await run_sleep(3)
+        info = await HUB.call("designer", "tab_info", tabId=tab) or {}
+        if info.get("title", "").startswith(title):
+            break
+    else:
+        raise RuntimeError(f"nayi doc ka naam '{title}' nahi laga")
     want = len(sections[0]["label"]) if sections else 1
     for attempt in range(2):
         await HUB.exec("designer", tab, "gdoc_paste", html, text)
