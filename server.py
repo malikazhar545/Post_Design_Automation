@@ -662,7 +662,9 @@ def split_sections(doc):
             cur = {"label": DONE_RE.sub("", label).strip(" ()-#"), "lines": [rest] + label_urls,
                    "bold": [None] * (1 + len(label_urls)),
                    "done": bool(m.group("pre")) or bool(DONE_RE.search(label)) or bool(re.match(r"^\W*done\b", rest, re.I)),
-                   "nopub": bool(NOPUB_RE.search(rest)), "brief": False}
+                   "nopub": bool(NOPUB_RE.search(rest)), "brief": False,
+                   # "Post 1 | Informational carousel" -> "|" ke baad ki qisam (comparison / carousel pehchan)
+                   "desc": (re.search(r"\|\s*(.*)$", URL_RE.sub("", line)) or [None, ""])[1].strip()}
             sections.append(cur)
         elif d and (not d.group("rest") or len(d.group("rest").split()) <= 5):
             rest = d.group("rest").strip()
@@ -848,9 +850,19 @@ def parse_doc(doc):
             ba_text = "\n".join(l for l in content if not BA_RE.match(l) and not URL_RE.search(l)).strip()
             extra = ba_text if re.sub(r"(?i)\b(before|after|vs|work\s*in\s*progress|in\s*progress|wip|during)\b|[\W_]+",
                                       "", ba_text) else ""
-            if CFG.get("before_after_mode", "carousel") == "comparison":
+            # format doc se: "comparison / side by side / split / one image" -> ek image; "carousel / swipe" -> carousel;
+            # kuch na likha ho -> config (before_after_mode)
+            words = " ".join([s["label"], s.get("desc", "")] + [l for l, _ in body if not URL_RE.search(l)][:6]).lower()
+            if re.search(r"compar|side[ -]by[ -]side|split|one image|single (image|post)|\bvs\b|collage", words):
+                mode = "comparison"
+            elif re.search(r"carousel|swipe|slides?\b", words):
+                mode = "carousel"
+            else:
+                mode = CFG.get("before_after_mode", "carousel")
+            if mode == "comparison":
                 d = new_design("post", s["label"], "\n".join(x for x in (extra, ba[2], "AFTER") if x), ba[0])
-                d.update(section=s["label"], before_after="pair", after_url=ba[1], after_path=None, ba_heading=extra)
+                d.update(section=s["label"], before_after="pair", after_url=ba[1], after_path=None, ba_heading=extra,
+                         ba_label=ba[2])
                 designs.append(d)
                 continue
             carousel_no += 1
@@ -2258,7 +2270,7 @@ def build_design_message(company, designs, outputs=None, already=()):
             # before/after: dono asal photos zaroori, label chhota (bara heading nahi)
             if d["before_after"] == "pair":
                 lines.append(CFG["before_after_comparison_note"].format(
-                    b=file_no(d["image_path"]), a=file_no(d["after_path"])))
+                    b=file_no(d["image_path"]), a=file_no(d["after_path"]), before_label=d.get("ba_label", "BEFORE")))
             else:
                 lines.append(CFG["before_after_slide_note"].format(
                     k=d["slide"], n=file_no(d["image_path"]), label=d["before_after"]))

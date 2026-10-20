@@ -1308,3 +1308,20 @@ class BeforeLabelTests(unittest.TestCase):
         d, _, _ = server.parse_doc(before)
         self.assertEqual([x["before_after"] for x in d], ["BEFORE", "AFTER"])
         self.assertEqual(d[0]["ba_heading"], "Kitchen glow-up")
+
+
+class BeforeAfterModeTests(unittest.TestCase):
+    A = "https://drive.google.com/file/d/AAAAAAAAAAAAAAAAAAAAAAAAA/view"
+    B = "https://drive.google.com/file/d/BBBBBBBBBBBBBBBBBBBBBBBBB/view"
+
+    def _doc(self, label):
+        return f"{label}\nHEADLINE:\nWORK IN PROGRESS / AFTER\nWork in progress: {self.A}\nAfter: {self.B}\nCAPTION:\nc"
+
+    def test_mode_follows_doc(self):
+        d, _, _ = server.parse_doc(self._doc("POST 1 | KITCHEN comparison"))
+        self.assertEqual([(x["before_after"], x.get("ba_label")) for x in d], [("pair", "WORK IN PROGRESS")])
+        d, _, _ = server.parse_doc(self._doc("POST 1 | KITCHEN carousel"))
+        self.assertEqual(len(d), 2)
+        with patch.dict(server.CFG, {"before_after_mode": "carousel"}):
+            d, _, _ = server.parse_doc(self._doc("POST 1 | KITCHEN"))
+        self.assertEqual(len(d), 2)  # kuch na likha -> carousel
