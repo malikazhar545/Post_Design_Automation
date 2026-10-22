@@ -10,3 +10,7 @@ __pycache__/
 tests/_runs/
 RESTART_SERVER.bat
 tests/_no_*.json
+
+# Local company reference selections
+company_references.json
+company_references.tmp

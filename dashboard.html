@@ -270,6 +270,9 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
   .search input { min-width: 0; width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+#referenceForm input, #referenceForm textarea { width:100%; min-height:44px; padding:12px; border:1px solid var(--line-2); border-radius:8px; background:var(--bg-2); color:var(--text); font:inherit; }
+#referenceForm textarea { font-family:var(--mono); resize:vertical; }
+#referenceStatus { overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
@@ -330,6 +333,7 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     <button class="tab" role="tab" id="t-history" aria-controls="v-history" aria-selected="false"><svg class="icon sm"><use href="#i-cal"/></svg>History</button>
     <button class="tab" role="tab" id="t-log" aria-controls="v-log" aria-selected="false"><svg class="icon sm"><use href="#i-term"/></svg>Live log</button>
     <button class="tab" role="tab" id="t-alerts" aria-controls="v-alerts" aria-selected="false"><svg class="icon sm"><use href="#i-bell"/></svg>Alerts <span class="badge" id="alertBadge" hidden>0</span></button>
+    <button class="tab" role="tab" id="t-references" aria-controls="v-references" aria-selected="false"><svg class="icon sm"><use href="#i-image"/></svg>References</button>
   </nav>
 </header>
 
@@ -338,6 +342,28 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     <svg class="icon"><use href="#i-power"/></svg>
     <div><b>Server band hai.</b> <span>START_SERVER.bat chalao — yeh page khud dobara jud jayega.</span></div>
   </div>
+
+  <section class="view" id="v-references" role="tabpanel" aria-labelledby="t-references" hidden>
+    <div class="card">
+      <div class="card-h"><h2>Company references</h2></div>
+      <form class="card-b stack" id="referenceForm" style="max-width:900px">
+        <p class="muted">Company select karo ya naam likho. Custom references wali company ke liye sirf aap ke selected designs jayenge. Baqi companies ka latest 4 designs wala rule same rahega.</p>
+        <label for="referenceCompany">Company name</label>
+        <input id="referenceCompany" list="referenceCompanies" required maxlength="200" autocomplete="off" placeholder="Example: Beyond the Budget">
+        <datalist id="referenceCompanies"></datalist>
+        <p id="referenceMode" class="muted" aria-live="polite">Company choose karo.</p>
+        <label for="referencePaths">Image file paths (maximum 10)</label>
+        <textarea id="referencePaths" rows="10" spellcheck="false" aria-describedby="referenceHelp referenceCount" placeholder="D:\References\Company\design-1.png&#10;D:\References\Company\design-2.jpg"></textarea>
+        <div id="referenceHelp" class="muted">Har line mein aik image ka poora path paste karo (Windows Copy as path bhi chalega). Folder path nahi. Save ke baad agli file se apply hoga.</div>
+        <div id="referenceCount" class="muted" aria-live="polite">0 / 10 references</div>
+        <div id="referenceStatus" role="status" tabindex="-1"></div>
+        <div class="actions">
+          <button class="btn primary" type="submit" id="referenceSave">Save references</button>
+          <button class="btn" type="button" id="referenceReset">Use automatic latest 4</button>
+        </div>
+      </form>
+    </div>
+  </section>
 
   <!-- AAJ -->
   <section class="view" id="v-today" role="tabpanel" aria-labelledby="t-today">
@@ -491,6 +517,7 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     $$(".view").forEach(v => v.hidden = v.id !== "v-" + name);
     store.set("tab", name);
     if (name === "history") loadHistory();
+    if (name === "references") loadReferences();
     if (name === "alerts") { store.set("seenAlert", alertSeq); updateBadge(); }
     if (name === "log") renderLogFull(true);
   }
@@ -571,6 +598,59 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
   document.addEventListener("click", () => { menu.classList.remove("open"); $("#btnMenu").setAttribute("aria-expanded", "false"); });
   document.addEventListener("keydown", e => { if (e.key === "Escape") { menu.classList.remove("open"); $("#btnMenu").setAttribute("aria-expanded", "false"); } });
   $$(".menu-list [data-act]").forEach(b => b.onclick = () => act(b.dataset.act, b));
+
+  /* ---------- company references ---------- */
+  let referenceEntries = {};
+  const referenceKey = name => name.trim().replace(/\s+/g, " ").toLowerCase();
+  const referencePaths = () => $("#referencePaths").value.split(/\r?\n/).map(p => p.trim()).filter(Boolean);
+  function referenceCount() { $("#referenceCount").textContent = `${referencePaths().length} / 10 references`; }
+  function selectReferenceCompany() {
+    const entry = referenceEntries[referenceKey($("#referenceCompany").value)];
+    $("#referencePaths").value = entry ? entry.paths.join("\n") : "";
+    $("#referenceMode").textContent = entry ? `Custom: ${entry.paths.length} saved references` : "Automatic: latest 4 designs";
+    $("#referenceStatus").textContent = "";
+    referenceCount();
+  }
+  async function loadReferences() {
+    try {
+      const response = await fetch("/api/references", {cache: "no-store"});
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.message || "References load nahi huay");
+      referenceEntries = data.entries;
+      $("#referenceCompanies").innerHTML = data.companies.map(c => `<option value="${esc(c)}"></option>`).join("");
+    } catch (error) { $("#referenceStatus").textContent = error.message; }
+  }
+  $("#referenceCompany").addEventListener("change", selectReferenceCompany);
+  $("#referencePaths").addEventListener("input", referenceCount);
+  async function saveReferences(automatic) {
+    const company = $("#referenceCompany").value.trim();
+    const paths = automatic ? [] : referencePaths();
+    const status = $("#referenceStatus");
+    if (!company || paths.length > 10) {
+      status.textContent = !company ? "Company ka naam likho." : "Maximum 10 references add kar sakte hain.";
+      status.focus(); return;
+    }
+    $("#referenceSave").disabled = $("#referenceReset").disabled = true;
+    $("#referenceCompany").disabled = $("#referencePaths").disabled = true;
+    status.textContent = "Save ho raha hai...";
+    try {
+      const response = await fetch("/api/action?" + new URLSearchParams({do: "save_references", company, paths: JSON.stringify(paths)}), {headers: {"X-Dashboard": "1"}});
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.message || "Save nahi hua");
+      referenceEntries = data.entries;
+      if (automatic) $("#referencePaths").value = "";
+      $("#referenceMode").textContent = paths.length ? `Custom: ${paths.length} saved references` : "Automatic: latest 4 designs";
+      referenceCount();
+      status.textContent = data.message;
+      await loadReferences();
+    } catch (error) { status.textContent = error.message; status.focus(); }
+    finally {
+      $("#referenceSave").disabled = $("#referenceReset").disabled = false;
+      $("#referenceCompany").disabled = $("#referencePaths").disabled = false;
+    }
+  }
+  $("#referenceForm").addEventListener("submit", event => {event.preventDefault(); saveReferences(false);});
+  $("#referenceReset").onclick = () => saveReferences(true);
 
   /* ---------- render: header ---------- */
   function renderHeader(s) {
@@ -858,7 +938,7 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
   poll(); setInterval(poll, 2000);
   setInterval(() => lastState && renderNow(lastState), 1000);
   const urlTab = new URLSearchParams(location.search).get("tab");
-  showTab(["today", "history", "log", "alerts"].includes(urlTab) ? urlTab : store.get("tab", "today"));
+  showTab(["today", "history", "log", "alerts", "references"].includes(urlTab) ? urlTab : store.get("tab", "today"));
 })();
 </script>
 </body>

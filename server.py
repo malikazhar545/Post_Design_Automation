@@ -42,6 +42,7 @@ except Exception:
 from websockets.asyncio.server import serve
 from collections import deque
 import dashboard_api
+import company_references
 import gmail_watch
 
 BASE = Path(__file__).resolve().parent
@@ -2204,7 +2205,7 @@ async def resolve_company_chat(waseem, company, terms, doc_text, out_dir):
         log(f"  ({e}) — aap ke {len(refs)} aakhri approved designs se branding bana raha hoon")
         cid = await create_waseem_chat(waseem, company, CFG["refs_branding_message"].format(company=company),
                                        files=refs)
-        remember_chat("waseem", company, cid, company, refs=[r.name for r in refs])
+        remember_chat("waseem", company, cid, company, refs=[reference_memory_key(company, r) for r in refs])
         return cid, None
 
 
@@ -2657,8 +2658,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     uploaded = {d["website_brand"]["logo"] for d in designs if d.get("website_brand")}
     refs = style_refs(company)
     mem = CHAT_MEMORY.get("waseem", {}).get(norm(company)) or {}
-    sent_before = set(mem.get("refs", [])) if mem.get("id") == cid else set()
-    old_refs = [r for r in refs if r.name in sent_before]  # is chat mein pehle ja chuki -> dobara upload nahi
+    sent_before = set(mem.get("refs", [])) if mem.get("id") == cid and not custom_reference_entry(company) else set()
+    old_refs = [r for r in refs if reference_memory_key(company, r) in sent_before]  # is chat mein pehle ja chuki -> dobara upload nahi
     uploaded |= set(old_refs)
     if refs:
         log(f"  Style reference: {len(refs)} aap ke approved designs"
@@ -2668,13 +2669,15 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         # references ALAG message mein (generation message mein products ke saath milkar ek image na ban jaye)
         try:
             n = "1" if len(new_refs_all) == 1 else f"1 to {len(new_refs_all)}"
-            await send_with_limit_retry(CFG["style_ref_message"].format(n=n, company=company), new_refs_all)
+            await send_with_limit_retry(style_reference_message(company, n), new_refs_all)
             await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
             uploaded |= set(new_refs_all)
-            remember_chat("waseem", company, cid, mem.get("title") or company, refs=[r.name for r in new_refs_all])
+            remember_chat("waseem", company, cid, mem.get("title") or company, refs=[reference_memory_key(company, r) for r in new_refs_all])
             log("  Style reference alag message mein bhej diye")
         except Exception as e:
             log(f"  (style reference nahi gaye: {e} — un ke baghair)")
+            if custom_reference_entry(company):
+                raise RuntimeError("Custom references upload nahi huay; file ko dobara try karein.") from e
             refs = []
 
     switched = []
@@ -2699,10 +2702,10 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         if refs:
             try:
                 n = "1" if len(refs) == 1 else f"1 to {len(refs)}"
-                await send_with_limit_retry(CFG["style_ref_message"].format(n=n, company=company), refs)
+                await send_with_limit_retry(style_reference_message(company, n), refs)
                 await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
                 uploaded.update(refs)
-                remember_chat("waseem", company, cid, company, refs=[r.name for r in refs])
+                remember_chat("waseem", company, cid, company, refs=[reference_memory_key(company, r) for r in refs])
             except Exception as e:
                 log(f"  (nayi chat mein style reference nahi gaye: {e})")
         log("  Baqi images nayi chat mein")
@@ -2959,9 +2962,56 @@ def is_mockup_company(company):
     return any(norm(x).replace(" ", "") in key for x in CFG.get("mockup_companies", []))
 
 
+def reference_store():
+    return BASE / "company_references.json"
+
+
+def custom_reference_entry(company):
+    company = company_alias(company) or company
+    return company_references.load(reference_store()).get(company_references.company_key(company))
+
+
+def reference_memory_key(company, path):
+    if not custom_reference_entry(company):
+        return path.name
+    stat = path.stat()
+    return f"custom:{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def style_reference_message(company, n):
+    message = CFG["style_ref_message"].format(n=n, company=company)
+    if custom_reference_entry(company):
+        message += "\nThese are the owner's selected references. Use ONLY this reference set for visual style; disregard previous style reference images and generated designs. Keep the company's written branding instructions."
+    return message
+
+
+def dashboard_references(company=None, paths=None):
+    try:
+        if company is not None:
+            company = company_alias(company) or company
+            company_references.save(reference_store(), company, json.loads(paths))
+        entries = company_references.load(reference_store())
+        names = {entry["company"] for entry in entries.values()}
+        names.update(CFG.get("company_aliases", {}).values())
+        for chats in CHAT_MEMORY.values():
+            names.update(chats.keys())
+        for root in CFG.get("style_refs_dirs", ["style_refs"]):
+            root = Path(root) if Path(root).is_absolute() else BASE / root
+            if root.is_dir():
+                names.update(p.name for p in root.iterdir() if p.is_dir())
+        return {"ok": True, "entries": entries, "companies": sorted(names, key=str.casefold),
+                "message": "References save ho gaye. Agli file se apply honge."}
+    except (ValueError, OSError) as error:
+        return {"ok": False, "message": str(error)}
+
+
 def style_refs(company):
     """Aap ke apne approved designs (D:/Azhar/October/Posts/<Company>/ ya style_refs/<Company>/) — sab se naye 4.
     Folder ka naam thoda alag ho to bhi milta hai: 'E liquid'='Eliquid', 'Dental Care 4U'='dental care for you'."""
+    entry = custom_reference_entry(company)
+    if entry and entry.get("paths"):
+        # Never silently substitute automatic designs for a broken custom set.
+        return company_references.validate_paths(entry["paths"])
     import difflib
 
     def key(text):
@@ -4295,6 +4345,8 @@ async def http_route(connection, request):
                 docs.append({"file": f, "skip": norm(f) in HUB.skip,
                              "done": bool(m) and state.get(m.group(1), {}).get("status") == "done"})
             return http_reply(connection, {"docs": docs, "available": True})
+        if path == "/api/references":
+            return http_reply(connection, dashboard_references())
         if path == "/api/gmail":
             return http_reply(connection, gmail_watch.api_state())
         if path == "/api/history":
@@ -4303,6 +4355,8 @@ async def http_route(connection, request):
         if path == "/api/action":
             if request.headers.get("X-Dashboard") != "1":  # sirf apna dashboard (doosri website nahi)
                 return http_reply(connection, {"ok": False, "message": "forbidden"}, status=403)
+            if q.get("do") == "save_references":
+                return http_reply(connection, dashboard_references(q.get("company", ""), q.get("paths", "[]")))
             if q.get("do", "").startswith("gmail_"):
                 return http_reply(connection, gmail_watch.api_action(q["do"], q))
             if q.get("do") in ("skip", "unskip"):
