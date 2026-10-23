@@ -256,17 +256,34 @@ async def _wait_list(tab, url=None, timeout=30):
     return {"rows": [], "ready": False}
 
 
-def _done_or_open(stem, state, open_titles):
-    """Pehle se khuli tab / pehle ban chuki file -> wajah; warna None."""
-    key = S.norm(stem)
-    if key in {S.norm(S.folder_of(t)) for t in open_titles}:
-        return "pehle se khuli hai"
-    # naam se "ban chuki" sirf ISI MAHINE ki (agle mahine wahi number — Wear Wood 8 — nayi file hoti hai).
-    # Doc id wala check (link / khuli tab) har waqt — same doc = same file.
+def _file_key(name):
+    """Attachment / tab title -> match key (Google Docs / .docx / extra spaces hatao)."""
+    return S.norm(S.folder_of(name or ""))
+
+
+def _done_keys_this_month(state):
+    """Is mahine DONE files ke naam — automation inhein email se dobara nahi kholti."""
     month = datetime.now().strftime("%Y-%m")
-    done = {S.norm(S.folder_of(v.get("title", ""))) for v in state.values()
-            if v.get("status") == "done" and str(v.get("at", "")).startswith(month)}
-    if key in done:
+    keys = set()
+    for v in state.values():
+        if v.get("status") != "done":
+            continue
+        at = str(v.get("at") or "")
+        if at and not at.startswith(month):
+            continue  # at ho to isi mahine; at na ho (purana record) to bhi DONE maano
+        k = _file_key(v.get("title") or "")
+        if k:
+            keys.add(k)
+    return keys
+
+
+def _done_or_open(stem, state, open_titles):
+    """Pehle se khuli tab / pehle ban chuki file -> wajah; warna None.
+    Claude rule: DONE mark ke baad Gmail automation kabhi dobara open nahi karti."""
+    key = _file_key(stem)
+    if key in {_file_key(t) for t in open_titles}:
+        return "pehle se khuli hai"
+    if key and key in _done_keys_this_month(state):
         return "is mahine pehle ban chuki"
     return None
 
@@ -295,13 +312,22 @@ async def _wait_new_doc(before, gmail_tab=None):
 
 
 async def _already_made(new, state):
-    """Nayi khuli tab ki file pehle ban chuki (state mein DONE)? -> tab band kar do."""
+    """Nayi khuli tab pehle ban chuki? Same doc id OR same folder name this month
+    (Edit-with-Docs kabhi naya Doc id banata hai — safety net; ideal: pehle open hi na ho)."""
     did = _doc_id(new.get("url"))
     if did and state.get(did, {}).get("status") == "done":
         try:
             await S.HUB.call("designer", "close_tab", tabId=new["tabId"], timeout=20)
         except Exception:
             pass
+        return True
+    key = _file_key(new.get("title") or "")
+    if key and key in _done_keys_this_month(state):
+        try:
+            await S.HUB.call("designer", "close_tab", tabId=new["tabId"], timeout=20)
+        except Exception:
+            pass
+        S.log(f"Gmail: '{new.get('title')}' is mahine pehle ban chuki — tab band")
         return True
     return False
 
@@ -362,8 +388,11 @@ async def _open_thread_files(tab, row, item, data, state, opened_now, term=None)
     links = await S.HUB.exec("designer", tab, "gmail_doc_links", timeout=90) or []
     key_name = S.norm(term or item["name"])  # jis naam / hisse se email mili
     exact = not term or S.norm(term) == S.norm(item["name"])  # hisse se mili -> sirf naam wali file (ghalat email na khule)
+    opened_stems = set()
     for l in [l for l in links if key_name in S.norm(l.get("name", ""))] or (links if exact else []):
         await _open_link(l, row, item, data, state, opened_now)
+        # Drive chip + matching .docx = duplicate tab / naya Doc id — .docx skip
+        opened_stems.add(S.norm(S.folder_of(l.get("name") or "")))
     docx = [a for a in atts if re.search(r"\.docx?$", a.get("name", ""), re.I)]
     pick = [a for a in docx if key_name in S.norm(a["name"])] or (docx if exact else [])
     for a in pick:
@@ -373,6 +402,9 @@ async def _open_thread_files(tab, row, item, data, state, opened_now, term=None)
         if key in data["opened"]:
             continue
         stem = re.sub(r"\.docx?$", "", a["name"], flags=re.I)
+        if S.norm(S.folder_of(stem)) in opened_stems:
+            _mark(item, data, key, a["name"], "pehle se khuli hai")
+            continue
         before = await S.HUB.call("designer", "list_doc_tabs", timeout=20)
         why = _done_or_open(stem, state, [t["title"] for t in before])
         if why:  # pehle se khuli / ban chuki -> dobara nahi kholni
@@ -432,9 +464,11 @@ async def _scan_item(tab, item, base, query, data, state, opened_now):
         await S.HUB.call("designer", "goto_quiet", tabId=tab, url=search, timeout=120)
         await _wait_list(tab, search)
         await _open_thread_files(tab, row, item, data, state, opened_now, term)
-        # file khul gayi / pehle se tab mein khuli -> email READ hi rahe.
-        # File na khul saki aur email pehle unread thi -> wapis UNREAD (aap pending files isi se dekhte ho)
-        got = any(k.startswith(row["id"] + "|") and v.get("note") in (None, "pehle se khuli hai")
+        # File khul gayi / pehle se khuli / DONE skip -> email READ hi rahe (dobara scan na ho).
+        # Sirf jab file NA khul saki (fail) -> wapis UNREAD taake aap pending dekh sako.
+        # BUG tha: "pehle ban chuki" pe unread wapas -> DONE files har scan pe dubara open.
+        handled_notes = (None, "pehle se khuli hai", "pehle ban chuki", "is mahine pehle ban chuki")
+        got = any(k.startswith(row["id"] + "|") and v.get("note") in handled_notes
                   for k, v in data["opened"].items())
         if row.get("unread") and not got:
             try:

@@ -110,6 +110,7 @@ class Hub:
         self.open_docs = []        # Designer ki khuli Google Docs (har 20s) — dashboard line + Gmail ginti
         self.waiting_notes = {}    # norm(folder) -> kyun ruki (bari file ka set / company ki din ki limit)
         self.stuck_events = 0      # is file mein ChatGPT kitni dafa atka (refresh / Try again / wahi image dobara)
+        self.chat_refreshed_this_file = False  # is file mein pehle hi nayi chat bani to end pe dobara schedule mat karo
         self.waiting_limit_only = True  # sirf 12 ghante ki limit wali ruki hain (yeh raat ko intezar nahi karwati)
         self.no_new_files = False  # raat ka waqt (night_stop_at) guzar gaya -> nayi files line mein nahi
         self.rest_reason = ""
@@ -273,8 +274,19 @@ except Exception:
     CHAT_MEMORY = {}
 
 
+CHAT_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def valid_chat_id(cid):
+    """ChatGPT conversation id UUID hona chahiye — 'same' / short junk se /c/same broken page ban jati hai."""
+    return bool(cid and CHAT_ID_RE.match(str(cid).strip()))
+
+
 def remember_chat(role, company, cid, title, refs=None):
     """Company ki chat yaad rakho (+ kaun se style references is chat mein ja chuke — dobara upload na hon)."""
+    if not valid_chat_id(cid):
+        log(f"  (chat id reject — ghalat/yaad nahi: {cid!r})")
+        return
     old = CHAT_MEMORY.setdefault(role, {}).get(norm(company)) or {}
     keep = old.get("refs", []) if old.get("id") == cid else []
     CHAT_MEMORY[role][norm(company)] = {"id": cid, "title": title, "refs": sorted(set(keep) | set(refs or []))}
@@ -283,6 +295,18 @@ def remember_chat(role, company, cid, title, refs=None):
         CHAT_MEMORY_FILE.write_text(json.dumps(CHAT_MEMORY, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+
+
+def forget_chat(role, company):
+    """Ghalat / tootii chat memory hatao taake agli baar sidebar/search se sahi id mile."""
+    bucket = CHAT_MEMORY.get(role) or {}
+    key = norm(company)
+    if key in bucket:
+        bucket.pop(key, None)
+        try:
+            CHAT_MEMORY_FILE.write_text(json.dumps(CHAT_MEMORY, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
 
 CHAT_LIST_CACHE = {}  # role -> (time, [{'id','title'}]) — har file par poori list na mangni pade (429)
@@ -469,7 +493,8 @@ SECTION_RE = re.compile(
     r"(?P<pre>(?:done|✅|✔️?|☑️?)[\s:\-–]*)?"            # "DONE INSTA POST:" (pehle se bani)
     r"(?P<label>(?:[A-Za-z][A-Za-z0-9 /&+\-]{0,40}?)?\b(?:posts?|story|stories|reels?|carousel|video)\b"
     r"[A-Za-z0-9 #/&+\-]{0,25}?(?:\s*\([^)]*\))?)"
-    r"\s*(?:[:\-–]\s*(?P<rest>.*)|$)", re.I)
+    r"\s*[*_~]*\s*"                                     # markdown wrappers around label
+    r"(?:[:\-–;]\s*(?P<rest>.*)|$)", re.I)  # "Story; 4 ..." bhi section
 # Molen jaisa: "10/3Done", "10/11 Do not publish"
 DATE_RE = re.compile(r"^\s*(?P<label>\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*(?P<rest>.{0,40})$")
 HEADING_RE = re.compile(r"^\W*(?:headings?|headlines?|lines?|on[ -]screen(?: reel)? text)\W*?(?:[:;]\s*(?P<rest>.*)|\s*$)", re.I)
@@ -637,6 +662,8 @@ def match_label(line):
 
 def _clean_line(line):
     line = line.strip().replace("\u00a0", " ")
+    # "*POST 2* https://..." -> "POST 2 https://..."
+    line = re.sub(r"\*+([A-Za-z0-9][^*]{0,40}?)\*+", r"\1", line)
     return re.sub(r"^\*+\s*|\s*\*+$", "", line).strip()  # markdown ** hatao
 
 
@@ -656,10 +683,19 @@ def split_sections(doc):
         d = DATE_RE.match(line)
         if m and cur is not None and not any(x for x in cur["lines"]) and not label_urls \
                 and re.fullmatch(r"\s*(?:(?:\d+\s*[- ]?\s*)?sec(?:ond)?s?\s+)?(story|stories|reels?|carousel|video)"
-                                 r"(?:\s+(?:text|script))?\s*", m.group("label"), re.I) \
+                                 r"(?:\s+(?:text|script|cover|title|hook))?\s*", m.group("label"), re.I) \
                 and not (m.group("rest") or "").strip():
-            # "Post#3" ke foran neeche akela "Story" -> nayi post nahi, pichli post story hai
+            # "Post#3" ke foran neeche akela "Story" / "REEL COVER" -> nayi post nahi, pichli post story/reel hai
             cur["label"] += f" ({m.group('label').strip()})"
+            continue
+        if m and cur is not None and re.fullmatch(
+                r"(?:(?:\d+\s*[- ]?\s*)?sec(?:ond)?s?\s+)?reels?\s*(?:cover|title|hook|text|script)?",
+                m.group("label").strip(), re.I) and not (m.group("rest") or "").strip():
+            # "POST 17 | REEL" ke neeche "**REEL COVER**" (lines pehle se hain) -> nayi section nahi
+            if "(reel)" not in cur["label"].lower():
+                cur["label"] += " (reel)"
+            cur["lines"].append(line)
+            cur["bold"].append(bold)
             continue
         if m and cur is not None and re.fullmatch(r"(video|reel)s?\s*links?", m.group("label").strip(), re.I):
             # "Post 3" ke neeche "Video link: ..." -> nayi post nahi; yeh Post 3 hi hai aur woh REEL hai
@@ -746,12 +782,14 @@ def parse_doc(doc):
     carousel_no = 0
     for s in split_sections(doc):
         label = s["label"].upper()
+        desc = (s.get("desc") or "").upper()  # "POST 17 | REEL | NINJA" -> desc mein REEL
         all_urls = [clean_url(u.group(0)) for l in s["lines"] for u in URL_RE.finditer(l)]
         video_link = next((u for u in all_urls if VIDEO_LINK_RE.search(u)), None)
         has_image = any(is_image_link(u) or IG_POST_RE.search(u) for u in all_urls)
-        if (re.search(r"REEL|VIDEO", label) or (video_link and not has_image)
+        if (re.search(r"REEL|VIDEO", label) or re.search(r"\bREEL\b|\bVIDEO\b", desc)
+                or (video_link and not has_image)
                 or any(REEL_TEXT_RE.match(line) for line in s["lines"])):
-            # reel aap khud banate ho (label se ya video link se pehchani) -> skip, summary mein
+            # reel aap khud banate ho (label / "| REEL |" / cover / script se) -> skip, summary mein
             why = f" [video link: {video_link[:60]}]" if video_link and not re.search(r"REEL|VIDEO", label) else ""
             reels.append(f"{s['label']}: {title_of(s)}{why}".strip(": "))
             if designs:  # reel ki jagah (sets / din ki ginti: reel bhi 6 mein)
@@ -941,17 +979,23 @@ def before_after_links(body):
     return (found["before"], found["after"], labels.get("before", "BEFORE")) if len(found) == 2 else None
 
 
-SLIDE_RE = re.compile(r"^\W*slide\s*(\d+)\W*?(?:[:\-–]\s*(?P<rest>.*))?$", re.I)
+SLIDE_RE = re.compile(r"^\W*slide\s*(\d+)\W*?(?:[:\-–;]\s*(?P<rest>.*))?$", re.I)
+# Writers often continue "Slide 1; url" with bare "2; url" / "3; url" (Instagram carousels).
+SLIDE_CONT_RE = re.compile(r"^\W*(\d{1,2})\W*?(?:[:\-–;]\s*(?P<rest>.*))?$", re.I)
 
 
 def split_slides(body):
-    """Carousel ki slides: 'Slide 1: text' / 'slide 2 https://img' ... (CAPTION se pehle). 2+ slides -> list."""
+    """Carousel ki slides: 'Slide 1: text' / 'slide 2 https://img' / '2; url' ... (CAPTION se pehle). 2+ slides -> list."""
     slides, cur = [], None
     for line, _ in body:
         if CAPTION_RE.match(line):
             break
         probe = URL_RE.sub(" ", line).strip()
         m = SLIDE_RE.match(probe) if probe else None
+        if not m and slides and probe:
+            m = SLIDE_CONT_RE.match(probe)
+            if m and not (re.search(r"[:\-–;]", probe) or URL_RE.search(line)):
+                m = None  # "2 DAYS TO GO!" caption line nahi
         if m:
             cur = {"text": [], "image": None}
             slides.append(cur)
@@ -964,7 +1008,7 @@ def split_slides(body):
             cur["text"].append(probe)
         for u in URL_RE.finditer(line):
             url = clean_url(u.group(0))
-            if cur["image"] is None and is_image_link(url) and not IG_POST_RE.search(url):
+            if cur and cur["image"] is None and is_image_link(url) and not IG_POST_RE.search(url):
                 cur["image"] = url
     if len(slides) < 2:
         return []
@@ -1667,6 +1711,11 @@ class Chat:
 
     async def goto(self, url):
         """ChatGPT page kholo. Load na ho to RUKO aur dobara koshish (30 files ke dauran fail nahi)."""
+        bad = re.search(r"/c/([^/?#]+)", url or "")
+        if bad and not valid_chat_id(bad.group(1)):
+            raise RuntimeError(
+                f"{self.role}: ghalat ChatGPT conversation link (/c/{bad.group(1)}) — "
+                "'Could not load this conversation' wala page; memory saaf karke sahi chat dhoondo")
         tries = CFG.get("chatgpt_load_retries", 10)
         for attempt in range(1, tries + 1):
             try:
@@ -1710,20 +1759,21 @@ class Chat:
         return any(re.search(r"stop", f"{b.get('aria') or ''} {b.get('testid') or ''}", re.I) for b in btns)
 
     async def send(self, text, files=()):
-        payload = []
-        for f in files:
-            f = Path(f)
-            payload.append({"name": f.name, "type": mimetypes.guess_type(f.name)[0] or "image/png",
-                            "b64": base64.b64encode(f.read_bytes()).decode()})
+        # Badi JPEG (3–4MB x 10) WebSocket/executeScript mein fail / 0 thumbs → pehle chhota attach payload
+        payload = [file_attach_payload(f) for f in files]
         try:
-            typed = await HUB.exec(self.role, self.tab, "compose", text, payload, SEL, timeout=300)
+            typed = await HUB.exec(self.role, self.tab, "compose", text, payload, SEL, timeout=480)
         except RuntimeError as e:
             if payload:
                 raise AttachFailed(f"{self.role}: attachment verify nahi hui ({e})") from e
             raise
         if payload and (not typed or typed.get("attached", 0) != len(payload)):
             # image (product / photo) nahi lagi -> bina image ke message NAHI bhejna
-            raise AttachFailed(f"{self.role}: {len(payload)} mein se {(typed or {}).get('attached', 0)} image hi lagi")
+            dbg = ""
+            if isinstance(typed, dict):
+                dbg = f" [got_files={typed.get('got_files')} inputs={typed.get('inputs')} method={typed.get('method')}]"
+            raise AttachFailed(
+                f"{self.role}: {len(payload)} mein se {(typed or {}).get('attached', 0)} image hi lagi{dbg}")
         if not typed or not typed.get("typed"):
             # page abhi load / badal raha tha -> ruk kar chat dobara kholo, ek dafa phir likho
             log(f"    ({self.role}: text box mein nahi gaya — page dobara khol kar phir likh raha hoon)")
@@ -1731,13 +1781,17 @@ class Chat:
             await self.goto(await self.url())
             await run_sleep(3)
             try:
-                typed = await HUB.exec(self.role, self.tab, "compose", text, payload, SEL, timeout=300)
+                typed = await HUB.exec(self.role, self.tab, "compose", text, payload, SEL, timeout=480)
             except RuntimeError as e:
                 if payload:
                     raise AttachFailed(f"{self.role}: attachment verify nahi hui ({e})") from e
                 raise
             if payload and (not typed or typed.get("attached", 0) != len(payload)):
-                raise AttachFailed(f"{self.role}: {len(payload)} mein se {(typed or {}).get('attached', 0)} image hi lagi")
+                dbg = ""
+                if isinstance(typed, dict):
+                    dbg = f" [got_files={typed.get('got_files')} inputs={typed.get('inputs')} method={typed.get('method')}]"
+                raise AttachFailed(
+                    f"{self.role}: {len(payload)} mein se {(typed or {}).get('attached', 0)} image hi lagi{dbg}")
             if not typed or not typed.get("typed"):
                 raise RuntimeError(f"{self.role}: ChatGPT box mein text nahi likha gaya")
         sent_at = time.time()
@@ -1826,9 +1880,13 @@ class Chat:
         tried = set()
         # 1) yaad: is company ki chat pehle mil/ban chuki -> seedha (koi search/list nahi)
         known = CHAT_MEMORY.get(self.role, {}).get(norm(company))
-        if known:  # pehle verify ho chuki -> dobara bhari request nahi
+        if known and valid_chat_id(known.get("id")):
+            # pehle verify ho chuki -> dobara bhari request nahi
             log(f"  {self.role}: \"{known['title']}\" (yaad se)")
             return known["id"], known["title"]
+        if known and not valid_chat_id(known.get("id")):
+            log(f"  {self.role}: yaad mein ghalat chat id {known.get('id')!r} — bhool kar dubara dhoondhunga")
+            forget_chat(self.role, company)
         # 2) page ke sidebar se titles (API request nahi -> 429 nahi)
         items = []
         try:
@@ -2167,6 +2225,8 @@ async def refresh_company_chat(waseem, company, old_cid, old_title):
     except Exception as e:
         log(f"  (purani chat ka naam nahi badla: {e} — memory nayi chat ki hai, phir bhi nayi hi khulegi)")
     mark_chat_refresh(company, add=False)
+    HUB.chat_refreshed_this_file = True
+    HUB.stuck_events = 0
     log(f"  Nayi chat tayyar; purani ka naam 'OLD - {old_title}' (ab nahi khulegi)")
     notify("Nayi ChatGPT chat", f"{company}: purani chat bhaari thi — nayi chat bana di, purani 'OLD - {old_title}'.")
     return cid
@@ -2284,8 +2344,10 @@ def doc_post_count(designs, reels, done_posts):
     return len(keys) + len(reels) + len(done_posts)
 
 
-# reel ki pehchan: "On-screen reel text", "REEL TEXT", "10-SECOND REEL TEXT:", "Reel script" (Bandz / My gym)
-REEL_TEXT_RE = re.compile(r"^\W*(?:on[ -]screen\s+|\d+\s*[- ]?\s*sec(?:ond)?s?\s+)?reel\s+(?:text|script)\b", re.I)
+# reel ki pehchan: "On-screen reel text", "ON-SCREEN SCRIPT", "REEL TEXT", "REEL COVER", "10-SECOND REEL TEXT" (Bandz / My gym)
+REEL_TEXT_RE = re.compile(
+    r"^\W*(?:on[ -]screen\s+(?:reel\s+)?(?:text|script)\b|"
+    r"(?:\d+\s*[- ]?\s*sec(?:ond)?s?\s+)?reel\s+(?:text|script|cover|title|hook)\b)", re.I)
 LOOSE_LABEL_RE = re.compile(r"^\W*(?:post|story|reel|carousel|video)\s*#?\s*\d+\b", re.I)
 
 
@@ -2658,7 +2720,16 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     uploaded = {d["website_brand"]["logo"] for d in designs if d.get("website_brand")}
     refs = style_refs(company)
     mem = CHAT_MEMORY.get("waseem", {}).get(norm(company)) or {}
-    sent_before = set(mem.get("refs", [])) if mem.get("id") == cid and not custom_reference_entry(company) else set()
+    # Claude jaisa reuse: same chat mein pehle gayi refs dobara nahi.
+    # Custom set: sirf tab reuse jab memory mein yahi selected files pehle upload ho chuki hon
+    # (pehle wala bug: custom pe har file pe force reupload).
+    ref_keys = [reference_memory_key(company, r) for r in refs]
+    have = set(mem.get("refs") or [])
+    same_chat = mem.get("id") == cid
+    can_reuse = same_chat and (
+        not custom_reference_entry(company)
+        or (bool(ref_keys) and all(k in have for k in ref_keys)))
+    sent_before = set(mem.get("refs", [])) if can_reuse else set()
     old_refs = [r for r in refs if reference_memory_key(company, r) in sent_before]  # is chat mein pehle ja chuki -> dobara upload nahi
     uploaded |= set(old_refs)
     if refs:
@@ -2667,17 +2738,28 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     new_refs_all = [r for r in refs if r not in uploaded]
     if new_refs_all:
         # references ALAG message mein (generation message mein products ke saath milkar ek image na ban jaye)
+        # Custom: pehle batch; fail ho to ek-ek (ChatGPT kabhi multi-attach ignore karta hai)
         try:
-            n = "1" if len(new_refs_all) == 1 else f"1 to {len(new_refs_all)}"
-            await send_with_limit_retry(style_reference_message(company, n), new_refs_all)
-            await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
-            uploaded |= set(new_refs_all)
-            remember_chat("waseem", company, cid, mem.get("title") or company, refs=[reference_memory_key(company, r) for r in new_refs_all])
-            log("  Style reference alag message mein bhej diye")
+            async def _send_refs(batch, label):
+                await send_with_limit_retry(style_reference_message(company, label), batch)
+                await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
+                uploaded.update(batch)
+                remember_chat("waseem", company, cid, mem.get("title") or company,
+                              refs=[reference_memory_key(company, r) for r in batch])
+                log(f"  Style reference {label} alag message mein bhej diye")
+
+            try:
+                n = "1" if len(new_refs_all) == 1 else f"1 to {len(new_refs_all)}"
+                await _send_refs(new_refs_all, n)
+            except AttachFailed:
+                if len(new_refs_all) <= 1:
+                    raise
+                log("  (batch attach fail — style refs ek-ek karke)")
+                for i, one in enumerate(new_refs_all, 1):
+                    await _send_refs([one], str(i))
         except Exception as e:
-            log(f"  (style reference nahi gaye: {e} — un ke baghair)")
-            if custom_reference_entry(company):
-                raise RuntimeError("Custom references upload nahi huay; file ko dobara try karein.") from e
+            # Claude jaisa: refs ideal hain, lekin attach fail pe poori file mat maro — designs chalain
+            log(f"  (style reference nahi gaye: {e} — un ke baghair jaari)")
             refs = []
 
     switched = []
@@ -2701,15 +2783,23 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         uploaded.update(d["website_brand"]["logo"] for d in designs if d.get("website_brand"))
         if refs:
             try:
-                n = "1" if len(refs) == 1 else f"1 to {len(refs)}"
-                await send_with_limit_retry(style_reference_message(company, n), refs)
-                await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
-                uploaded.update(refs)
-                remember_chat("waseem", company, cid, company, refs=[reference_memory_key(company, r) for r in refs])
+                async def _send_refs_new(batch, label):
+                    await send_with_limit_retry(style_reference_message(company, label), batch)
+                    await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
+                    uploaded.update(batch)
+                    remember_chat("waseem", company, cid, company,
+                                  refs=[reference_memory_key(company, r) for r in batch])
+                try:
+                    n = "1" if len(refs) == 1 else f"1 to {len(refs)}"
+                    await _send_refs_new(refs, n)
+                except AttachFailed:
+                    if len(refs) <= 1:
+                        raise
+                    log("  (nayi chat: batch fail — refs ek-ek)")
+                    for i, one in enumerate(refs, 1):
+                        await _send_refs_new([one], str(i))
             except Exception as e:
-                log(f"  (nayi chat mein style reference nahi gaye: {e})")
-                if custom_reference_entry(company):
-                    raise RuntimeError("Custom references nayi chat mein upload nahi huay.") from e
+                log(f"  (nayi chat mein style reference nahi gaye: {e} — un ke baghair jaari)")
         log("  Baqi images nayi chat mein")
 
     # BATCH (aap ka apna tareeqa — ChatGPT ki image limit kam lagti hai):
@@ -2980,6 +3070,36 @@ def reference_memory_key(company, path):
     return f"custom:{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
+def file_attach_payload(path, max_side=1600, quality=85, soft_max_bytes=450_000):
+    """ChatGPT compose ke liye image: bari files ko JPEG resize (WS / page inject limit se bachao)."""
+    from PIL import Image
+    path = Path(path)
+    raw = path.read_bytes()
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    if len(raw) <= soft_max_bytes:
+        return {"name": path.name, "type": mime, "b64": base64.b64encode(raw).decode()}
+    try:
+        img = Image.open(io.BytesIO(raw))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGBA") if "A" in (img.mode or "") else img.convert("RGB")
+        if img.mode == "RGBA":
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            bg.paste(img, mask=img.split()[-1])
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        w, h = img.size
+        scale = min(1.0, float(max_side) / max(w, h))
+        if scale < 1.0:
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        data = buf.getvalue()
+        return {"name": f"{path.stem}.jpg", "type": "image/jpeg", "b64": base64.b64encode(data).decode()}
+    except Exception:
+        return {"name": path.name, "type": mime, "b64": base64.b64encode(raw).decode()}
+
+
 def style_reference_message(company, n):
     message = CFG["style_ref_message"].format(n=n, company=company)
     if custom_reference_entry(company):
@@ -3009,11 +3129,24 @@ def dashboard_references(company=None, paths=None):
 
 def style_refs(company):
     """Aap ke apne approved designs (D:/Azhar/October/Posts/<Company>/ ya style_refs/<Company>/) — sab se naye 4.
-    Folder ka naam thoda alag ho to bhi milta hai: 'E liquid'='Eliquid', 'Dental Care 4U'='dental care for you'."""
+    Folder ka naam thoda alag ho to bhi milta hai: 'E liquid'='Eliquid', 'Dental Care 4U'='dental care for you'.
+    Custom 10: har file pe un mein se RANDOM style_refs_max (default 4) — har dafa same set nahi."""
     entry = custom_reference_entry(company)
     if entry and entry.get("paths"):
-        # Never silently substitute automatic designs for a broken custom set.
-        return company_references.validate_paths(entry["paths"])
+        # Custom pool (aap ke 10) save rehti hai; Claude jaisa har file pe random 4 hi jati hain.
+        paths = company_references.validate_paths(entry["paths"])
+        n = min(len(paths), int(CFG.get("style_refs_max", 4)))
+        if n <= 0:
+            return []
+        import random
+        picked = random.sample(paths, n) if len(paths) > n else list(paths)
+        if len(paths) > n:
+            try:
+                log(f"  Custom refs pool {len(paths)} — Claude-style random {n}: "
+                    + ", ".join(p.name for p in picked))
+            except Exception:
+                pass
+        return picked
     import difflib
 
     def key(text):
@@ -3536,11 +3669,16 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
     except Exception:
         pass
     # koi post chupke se na chhoote: jo section design/reel/done kisi mein nahi aaya -> summary mein naam ke saath
+    # Claude (f5887f1 / 507a40f): reel sahi pehchani = dropped nahi = file khud DONE. "| REEL |" / REEL COVER bhi cover.
     sections = split_sections(doc)
     if sections and len(designs) + len(reels) + len(done_posts) < len(sections):
         used = {d.get("section", d["label"]) for d in designs}
+        for x in reels + done_posts:
+            head = str(x).split(":")[0].strip()
+            used.add(head)
+            used.add(re.sub(r"\s*\([^)]*\)\s*$", "", head).strip())  # "POST 17 (REEL COVER)" -> "POST 17"
         dropped = [s["label"] for s in sections if s["label"] not in used
-                   and not any(x.startswith(s["label"]) for x in reels + done_posts)]
+                   and not any(str(x).startswith(s["label"]) for x in reels + done_posts)]
         if dropped:
             def first_text(label):  # doc mein us post ki pehli asal line -> pehchan aasaan
                 s = next(x for x in sections if x["label"] == label)
@@ -3583,8 +3721,12 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
     if not designs:
         if reels or done_posts:
             summary["designs"] = 0
+            # sirf reel/done thi to "dropped" incomplete mat banao — Claude: DONE + aap khud banao
+            summary.pop("dropped", None)
+            summary.pop("qa_fail", None)
+            summary.pop("image_fail", None)
             log("  Is file mein banane wali koi nayi post nahi (sab reel / done)")
-            return
+            return  # DONE line + notify neeche: "0 post; N reel aap khud banao"
         raise RuntimeError(f"Doc mein koi post/story nahi mili — doc ka text yahan dekho: {out_dir / 'doc_text.txt'}")
     posts = sum(d["kind"] == "post" for d in designs)
     log(f"  {posts} post, {len(designs) - posts} story: " + ", ".join(
@@ -3704,6 +3846,31 @@ def move_story_issues(summary):
     if moved:
         summary.setdefault("story_skipped", []).extend(moved)
     return bool(moved)
+
+
+def clear_reel_false_drops(summary):
+    """Har company: jo section reel skip ho chuki, usay 'dropped' / incomplete mat samjho.
+    Warna POST|REEL files (My Gym jaisi) ERROR + retry par atak jati thin."""
+    reels = summary.get("reels") or []
+    dropped = summary.get("dropped") or []
+    if not dropped:
+        return
+    reel_blob = " | ".join(str(r) for r in reels).upper()
+
+    def is_reel_drop(x):
+        head = str(x).split("«")[0].split(":")[0].strip()
+        if re.search(r"\breels?\b|\bvideos?\b", head, re.I):
+            return True
+        if not reels:
+            return False
+        hu = head.upper()
+        return bool(hu) and (hu in reel_blob or any(str(r).upper().startswith(hu) for r in reels))
+
+    keep = [x for x in dropped if not is_reel_drop(x)]
+    if keep:
+        summary["dropped"] = keep
+    else:
+        summary.pop("dropped", None)
 
 
 def fail_hint(text):
@@ -4127,6 +4294,7 @@ async def run_all(only=None, only_post=None):
             report.append(summary)
             HUB.current = {"file": folder, "company": company, "i": i, "total": total, "since": time.time()}
             HUB.stuck_events = 0
+            HUB.chat_refreshed_this_file = False
             HUB.watching = False
             try:
                 if doc_id in preparation_errors:
@@ -4140,6 +4308,13 @@ async def run_all(only=None, only_post=None):
                                   prepared_doc=prepared[doc_id])
                 if move_story_issues(summary):  # sirf story reh gayi -> aap khud banaoge, file DONE
                     log(f"  Story skip (aap khud banaoge): {'; '.join(summary['story_skipped'])}")
+                # har company: reel / done sections "dropped" incomplete mat banao (Claude: posts DONE + reel aap banao)
+                clear_reel_false_drops(summary)
+                reels_only = (not summary.get("designs")) and (summary.get("reels") or summary.get("done"))
+                if reels_only:
+                    summary.pop("dropped", None)
+                    summary.pop("qa_fail", None)
+                    summary.pop("image_fail", None)
                 if summary.get("qa_fail") or summary.get("image_fail") or summary.get("dropped"):
                     raise RuntimeError("File incomplete — failed/missing images summary mein hain; DONE mark nahi ki")
                 if summary.get("designs") and not summary.get("made"):  # 0 images bani -> DONE kabhi nahi
@@ -4160,7 +4335,14 @@ async def run_all(only=None, only_post=None):
                         if summary.get("split_into"):
                             state[doc_id]["split_into"] = summary["split_into"]
                         rechecks.append((doc_id, tab["tabId"], folder, summary.get("sections"), files_done))
-                    log(f"[{i}/{total}] DONE: {title}")
+                    n_reels = len(summary.get("reels") or [])
+                    n_made = summary.get("made") or 0
+                    if n_reels:
+                        log(f"[{i}/{total}] DONE: {title} — {n_made} post(s) bani; {n_reels} reel aap khud banao")
+                        notify(f"DONE + reels: {folder}",
+                               f"{n_made} post(s) done — {n_reels} reel aap khud banao", sticky=False)
+                    else:
+                        log(f"[{i}/{total}] DONE: {title}")
             except DocSplit as e:
                 # asal bari file khud nahi banti — hisse nayi docs (tabs) hain, agli baari line mein aa jayengi
                 report.remove(summary)
@@ -4211,8 +4393,10 @@ async def run_all(only=None, only_post=None):
             save_state(state)
             write_file_report(OUT_ROOT / today / folder, summary)  # dashboard: is file ka aakhri hal
             rest_next = bool(summary.get("designs"))  # ChatGPT par kaam hua -> agli file se pehle aaram
-            if HUB.stuck_events >= CFG.get("chat_refresh_after_stucks", 2) and not only_post:
+            if (HUB.stuck_events >= CFG.get("chat_refresh_after_stucks", 2) and not only_post
+                    and not HUB.chat_refreshed_this_file):
                 # is chat mein baar baar atka -> agli dafa isi company ki NAYI chat (purani 'OLD - ...')
+                # Lekin agar is file mein pehle hi nayi chat ban chuki ho to dobara schedule mat karo.
                 mark_chat_refresh(company)
                 log(f"  {company}: is file mein ChatGPT {HUB.stuck_events} dafa atka — agli file se pehle nayi chat banegi")
             if summary.get("made") and not only_post:
