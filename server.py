@@ -2708,6 +2708,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                 remember_chat("waseem", company, cid, company, refs=[reference_memory_key(company, r) for r in refs])
             except Exception as e:
                 log(f"  (nayi chat mein style reference nahi gaye: {e})")
+                if custom_reference_entry(company):
+                    raise RuntimeError("Custom references nayi chat mein upload nahi huay.") from e
         log("  Baqi images nayi chat mein")
 
     # BATCH (aap ka apna tareeqa — ChatGPT ki image limit kam lagti hai):
@@ -3870,7 +3872,9 @@ def clear_run_marker():
 
 
 def start_run(only=None, only_post=None):
-    # Reserve synchronously: rapid START clicks cannot create two workers.
+    # All callers (manual, Gmail, auto-resume) must share this atomic reservation.
+    if HUB.running or (HUB.run_task is not None and not HUB.run_task.done()):
+        return False
     HUB.running = True
     HUB.pause_requested = HUB.paused = False
     HUB.paused_seconds = 0.0
@@ -3878,6 +3882,7 @@ def start_run(only=None, only_post=None):
     HUB.pause_signal.clear()
     HUB.resume_signal.set()
     HUB.run_task = asyncio.create_task(run_all(only, only_post))
+    return True
 
 
 async def auto_resume():
@@ -3904,11 +3909,16 @@ async def auto_resume():
     try:  # bijli ke baad Chrome ne files ki tabs wapis na kholi hon -> khud kholo
         open_urls = {t["url"].split("#")[0] for t in await HUB.call("designer", "list_doc_tabs")}
         for doc in data.get("docs", []):
+            # A manual/Gmail START may arrive during any awaited browser command.
+            if HUB.running or (HUB.run_task is not None and not HUB.run_task.done()):
+                return
             if doc["url"].split("#")[0] not in open_urls:
                 await HUB.call("designer", "open_tab", url=doc["url"], active=False)
                 log(f"  File dobara kholi: {doc['title']}")
     except Exception as e:
         log(f"  (files dobara kholne mein masla: {e})")
+    if HUB.running or (HUB.run_task is not None and not HUB.run_task.done()):
+        return
     notify("Kaam khud dobara shuru", "Bijli / restart ke baad adhoora kaam wahin se chal raha hai.", sticky=False)
     log("AUTO-RESUME: adhoora kaam wahin se shuru (ban chuki images dobara nahi banengi).")
     start_run()
@@ -3916,6 +3926,9 @@ async def auto_resume():
 
 async def run_all(only=None, only_post=None):
     """only = file naam ka hissa -> sirf woh file (test ke liye)"""
+    owner = HUB.run_task
+    if owner is not None and owner is not asyncio.current_task() and not owner.done():
+        return  # Never steal ownership, pause controls or the current company's tab.
     if HUB.run_task is not asyncio.current_task():
         HUB.pause_requested = HUB.paused = False
         HUB.paused_seconds = 0.0

@@ -916,7 +916,10 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
   loadGmail(); setInterval(() => online && loadGmail(), 5000);
 
   /* ---------- polling ---------- */
+  let polling = false;
   async function poll() {
+    if (polling) return;
+    polling = true;
     try {
       const r = await fetch(`/api/state?log=${logSeq}&alert=${alertSeq}`, { cache: "no-store" });
       const st = await r.json();
@@ -932,7 +935,7 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
       firstLoad = false;
     } catch {
       if (online !== false) { online = false; $("#offline").hidden = false; renderHeader(null); renderNow(null); renderQueue(null); }
-    }
+    } finally { polling = false; }
   }
   let lastDone = null;
   poll(); setInterval(poll, 2000);
