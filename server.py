@@ -4210,6 +4210,9 @@ async def auto_resume():
         for doc in data.get("docs", []):
             if HUB.running:  # beech mein START / Gmail ne run shuru kar diya
                 return
+            m = re.search(r"/document/d/([^/]+)", doc["url"])
+            if norm(folder_of(doc.get("title", ""))) in HUB.skip or                     (m and load_state().get(m.group(1), {}).get("status") == "done"):
+                continue  # skip ki hui / ban chuki file dobara kabhi nahi kholni
             if doc["url"].split("#")[0] not in open_urls:
                 await HUB.call("designer", "open_tab", url=doc["url"], active=False)
                 log(f"  File dobara kholi: {doc['title']}")
@@ -4227,6 +4230,10 @@ async def run_all(only=None, only_post=None):
     owner = HUB.run_task
     if owner is not None and owner is not asyncio.current_task() and not owner.done():
         return  # doosra worker kabhi nahi (same tab / same chat par do run = duplicate images)
+    if PORT == 8765:
+        load_skips()  # dashboard ki skip ki hui files (date docs / Molen tax) — har run par pakka
+        if HUB.skip:
+            log(f"Skip (dashboard): {len(HUB.skip)} files — {', '.join(sorted(HUB.skip))}")
     if HUB.run_task is not asyncio.current_task():
         HUB.pause_requested = HUB.paused = False
         HUB.paused_seconds = 0.0
@@ -4268,7 +4275,8 @@ async def run_all(only=None, only_post=None):
         log(f"{len(tabs)} files mili hain. Right wali tab se left ki taraf ek ek kar ke shuru.")
         cleanup_old_outputs()
         if not only and not only_post:  # bijli jaye to agli dafa khud resume ho sake
-            set_run_marker(active=True, paused=False, docs=[{"url": t["url"], "title": t["title"]} for t in tabs])
+            set_run_marker(active=True, paused=False, docs=[{"url": t["url"], "title": t["title"]} for t in tabs
+                                                            if norm(folder_of(t["title"])) not in HUB.skip])
         today = datetime.now().strftime("%Y-%m-%d")
         report = []  # aakhir ki summary
         prepared, preparation_errors = {}, {}
@@ -4608,8 +4616,8 @@ SKIP_FILE = OUT_ROOT / "skip.json"  # dashboard skip restart ke baad bhi yaad (d
 def load_skips():
     try:
         HUB.skip |= set(json.loads(SKIP_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"  (skip list load nahi hui: {e})")
 
 
 def save_skips():
