@@ -81,15 +81,12 @@ def _downloads_roots():
 
 def resolve_open_folder(folder, company, report=None):
     """Har created file: report.final_dir → Downloads\\date\\company\\… → Output folder."""
+    # Sirf Downloads wala folder — Output folder KABHI nahi. Folder hata diya ho to bhi wahi path
+    # (Open Folder phir 'nahi mila' batata hai).
     report = report or {}
     raw = report.get("final_dir")
     if raw:
-        try:
-            p = Path(raw)
-            if p.is_dir():
-                return str(p.resolve())
-        except OSError:
-            pass
+        return str(Path(raw))
     day = folder.parent.name if DAY_RE.match(folder.parent.name or "") else None
     company_safe = re.sub(r'[<>:"/\\|?*]', "", company or "").strip()
     if day and company_safe:
@@ -135,11 +132,6 @@ def resolve_open_folder(folder, company, report=None):
                     return str(base.resolve())
             except OSError:
                 pass
-    try:
-        if folder.is_dir():
-            return str(folder.resolve())
-    except OSError:
-        pass
     return None
 
 
@@ -169,6 +161,7 @@ def scan_file(folder, company_fn, state_by_title, current_folder=None, old_reels
     if report.get("error") and not issues:
         issues.append({"type": "File error", "text": report["error"]})
     todo = [{"type": "Story khud banao", "text": x} for x in report.get("story_skipped") or []]
+    todo += [{"type": "Post khud banao (2 dafa nahi bani)", "text": x} for x in report.get("manual_todo") or []]
     todo += [{"type": "Reel khud banao", "text": x} for x in reels or []]
     company = company_fn(folder.name)
     return {"file": folder.name, "company": company, "counts": counts, "status": status,
@@ -205,15 +198,8 @@ def resolve_company_folder(date, company, files):
         fd = f.get("final_dir")
         if not fd:
             continue
-        try:
-            p = Path(fd)
-            if p.is_dir():
-                parent = p.parent
-                if company_safe and parent.name.lower() == company_safe.lower() and parent.is_dir():
-                    return str(parent.resolve())
-                return str(p.resolve())
-        except OSError:
-            continue
+        p = Path(fd)  # Downloads\date\company\<file> -> us company ka Downloads folder
+        return str(p.parent if company_safe and p.parent.name.lower() == company_safe.lower() else p)
     return None
 
 

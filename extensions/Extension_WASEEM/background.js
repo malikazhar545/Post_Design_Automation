@@ -134,6 +134,11 @@ async function keepAwake(tabId) {
   if (t.autoDiscardable) await chrome.tabs.update(tabId, { autoDiscardable: false });
   if (t.discarded) { await chrome.tabs.reload(tabId); await waitComplete(tabId); t = await chrome.tabs.get(tabId); }
   if (!t.active && await inAutoGroup(t)) await chrome.tabs.update(tabId, { active: true });
+  // minimize window mein Chrome page ke timers ~1 min tak dheeme kar deta hai (nayi chat 5 min time-out) -> normal
+  try {
+    const w = await chrome.windows.get(t.windowId);
+    if (w.state === 'minimized') await chrome.windows.update(t.windowId, { state: 'normal', focused: false });
+  } catch (e) {}
 }
 
 function toB64(buf) {
@@ -173,6 +178,7 @@ const HANDLERS = {
     return true;
   },
   async close_tab({ tabId }) { await chrome.tabs.remove(tabId); return true; },
+  async move_tab({ tabId, index }) { const t = await chrome.tabs.move(tabId, { index }); return t.index; },
   async gmail_tab({ url }) {
     // Gmail watch list: script ke group wali apni Gmail tab (aap ki Gmail tab kabhi use nahi hoti)
     const g = await autoGroup();
@@ -443,6 +449,81 @@ const PAGE = {
     target.dispatchEvent(ev);
     return { ok: true };
   },
+  chat_mode_info: async function (setHigh) {
+    // ChatGPT composer: Work mode on hai? Thinking effort kya hai (Light/Medium/High)? setHigh -> slider aakhir (High)
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const btnOf = () => document.querySelector('button[aria-label="Select ChatGPT model"]');
+    const read = () => { const b = btnOf(); return b ? (b.innerText || '').replace(/\s+/g, ' ').trim() : ''; };
+    const effortOf = l => ((l.match(/(Light|Low|Medium|Standard|High|Extended|Heavy|Max)\s*$/i) || [])[1] || '');
+    const on = e => e.getAttribute('aria-checked') === 'true' || e.getAttribute('aria-selected') === 'true' ||
+      /^(on|active|checked)$/.test(e.getAttribute('data-state') || '');
+    const work = [...document.querySelectorAll('button,[role=tab],[role=radio]')]
+      .some(e => e.offsetParent && (e.innerText || '').trim() === 'Work' && on(e));
+    const label = read();
+    let effort = effortOf(label);
+    // naye chat page par button par sirf "Thinking effort" likha hota hai -> menu khol kar slider se level parho
+    if (setHigh && btnOf() && !/^high$/i.test(effort)) {
+      btnOf().click();
+      await sleep(900);
+      const s = document.querySelector('[role="slider"]');
+      const level = () => ((s && (s.getAttribute('aria-valuetext') || '')) || '').split(',')[0].trim();
+      if (s) {
+        if (!effort) effort = level();
+        if (!/^high$/i.test(effort)) {
+          s.focus();
+          for (const t of ['keydown', 'keyup'])
+            s.dispatchEvent(new KeyboardEvent(t, { key: 'End', code: 'End', keyCode: 35, which: 35, bubbles: true, cancelable: true }));
+          await sleep(700);
+          effort = level() || effort;
+        }
+      }
+      for (const t of ['keydown', 'keyup'])
+        document.activeElement.dispatchEvent(new KeyboardEvent(t, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+      await sleep(600);
+      effort = effortOf(read()) || effort;
+    }
+    return { label, effort, work };
+  },
+  gdoc_replace_all: async function (html, text, docLen) {
+    // asal bari file: sab select -> sirf set 1 paste. Selection pakki na ho to KUCH nahi (content double na ho)
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const ifr = document.querySelector('iframe.docs-texteventtarget-iframe');
+    if (!ifr || !ifr.contentDocument) return { ok: false, error: 'editor nahi mila' };
+    const target = ifr.contentDocument.querySelector('[contenteditable="true"]') || ifr.contentDocument.body;
+    const copied = () => {  // Docs se 'copy' karwao: jitna select hai utna text milta hai
+      const dt = new DataTransfer();
+      target.dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }));
+      return (dt.getData('text/plain') || '').length;
+    };
+    const mouse = el => { for (const t of ['mousedown', 'mouseup', 'click'])
+      el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); };
+    const whole = () => copied() >= Math.max(20, (docLen || 0) * 0.6);
+    target.focus();
+    for (const t of ['keydown', 'keypress', 'keyup'])
+      target.dispatchEvent(new KeyboardEvent(t, { key: 'a', code: 'KeyA', keyCode: 65, which: 65, ctrlKey: true, bubbles: true, cancelable: true }));
+    await sleep(800);
+    let how = 'ctrl+a';
+    if (!whole()) {  // Edit menu -> Select all
+      how = 'menu';
+      const menu = document.querySelector('#docs-edit-menu');
+      if (menu) {
+        mouse(menu);
+        await sleep(700);
+        const item = [...document.querySelectorAll('.goog-menuitem, [role="menuitem"]')]
+          .find(e => e.offsetParent && /^select all/i.test((e.innerText || '').trim()));
+        if (item) mouse(item);
+        await sleep(800);
+      }
+      target.focus();
+    }
+    const got = copied();
+    if (got < Math.max(20, (docLen || 0) * 0.6)) return { ok: false, error: `select all nahi hua (${how}, copy ${got}/${docLen})` };
+    const dt = new DataTransfer();
+    dt.setData('text/html', html);
+    dt.setData('text/plain', text);
+    target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return { ok: true };
+  },
   gdoc_set_title: function (title) {
     // insaan ki tarah: sab select -> naya naam type (execCommand) -> Enter; sirf value badalne se Docs save nahi karta
     const input = document.querySelector('input.docs-title-input');
@@ -492,6 +573,11 @@ const PAGE = {
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     let comp = document.querySelector(sel.composer);
     if (!comp) throw new Error('ChatGPT ka message box nahi mila');
+    const pastedChip = () => {  // message box mein "Pasted text" / .txt attachment ban gaya?
+      const c = document.querySelector(sel.composer);
+      const box = c && (c.closest('form') || (c.parentElement && c.parentElement.parentElement));
+      return !!(box && /pasted text|pasted\b|\.txt\b/i.test(box.innerText || ''));
+    };
     let attached = 0;
     if (files && files.length) {
       const dt = new DataTransfer();
@@ -560,11 +646,14 @@ const PAGE = {
       dt2.setData('text/plain', text);
       comp.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt2, bubbles: true, cancelable: true }));
       await sleep(1500);
-      if (!comp.innerText.trim()) { document.execCommand('insertText', false, text); }
+      // lamba paste ChatGPT "Pasted text" attachment bana deta hai (box khaali) — tab hazaron lafz dobara
+      // type mat karo (page jam -> 5 min time-out; nayi chat nahi banti thi)
+      if (!comp.innerText.trim() && !pastedChip() && text.length < 4000) { document.execCommand('insertText', false, text); }
     }
     await sleep(1000);
     const now = document.querySelector(sel.composer) || comp;
-    return { typed: (now.innerText || now.value || '').trim().length, attached, expected: (files || []).length };
+    const typedLen = (now.innerText || now.value || '').trim().length;
+    return { typed: typedLen || (pastedChip() ? text.length : 0), attached, expected: (files || []).length };
   },
   submit: async function (sel) {
     // send button (uploads khatam hone tak enable ka intezar); na mile to Enter

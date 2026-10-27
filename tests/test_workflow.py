@@ -284,7 +284,8 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         saved, summary, error = await self._run(designs, [["a"], [], ["c"]])
         self.assertIsNone(error)
         self.assertEqual(saved, {"Post 1": "a", "Post 3": "c"})  # Post 3 ki image Post 3 hi rahi
-        self.assertTrue(any("Post 2" in x for x in summary["image_fail"]))
+        # 2 koshishon ke baad bhi nahi bani -> 'khud banao' list (file ruke nahi)
+        self.assertTrue(any("Post 2" in x for x in (summary.get("image_fail") or []) + (summary.get("manual_todo") or [])))
 
     async def test_posts_go_in_one_message(self):
         designs = [server.new_design("post", f"Post {n}", f"Heading {n}") for n in (1, 2, 3)]
@@ -393,7 +394,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(server.CFG, {"batch_mode": True}):
             saved, summary, error = await self._run_capture(designs, [["s1", "s2", "s3"]], sends)
         self.assertEqual(len(sends), 1)  # poora album EK message
-        self.assertIn("whole carousel content in image screenshots", sends[0])
+        self.assertIn("Remember to create all 3 slides of this carousel post", sends[0])
         self.assertEqual(len(saved), 3)
 
     async def test_same_image_twice_is_not_counted_and_instagram_post_stays_in_batch(self):

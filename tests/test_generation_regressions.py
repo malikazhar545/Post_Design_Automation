@@ -66,7 +66,7 @@ class ProductIsolationTests(unittest.IsolatedAsyncioTestCase):
                     with patch.object(server.HUB, "exec", new=ex):
                         with self.assertRaises(server.AttachFailed):
                             await server.Chat("waseem").send("Generate", [product])
-                    self.assertEqual([c.args[2] for c in ex.await_args_list], ["compose"])
+                    self.assertEqual([c.args[2] for c in ex.await_args_list if c.args[2] not in ("click_text", "chat_mode_info")], ["compose"])
 
 
 def conversation(*entries):

@@ -304,7 +304,9 @@ def log(msg):
     print(line, flush=True)
     HUB.log_seq += 1
     HUB.log_lines.append((HUB.log_seq, line))
-    try:  # log file bhi (baad mein dekhne ke liye)
+    try:  # log file bhi (baad mein dekhne ke liye) — test server (doosra port) asal log mein na likhe
+        if PORT != 8765:
+            raise OSError("test")
         d = OUT_ROOT / "logs"
         d.mkdir(parents=True, exist_ok=True)
         with open(d / f"{datetime.now():%Y-%m-%d}.log", "a", encoding="utf-8") as f:
@@ -1608,6 +1610,69 @@ def _ocr(path):
     return winocr.recognize_pil_sync(Image.open(path), "en")["text"]
 
 
+_FOREIGN_LINE_RE = re.compile(
+    r"@[a-z0-9_.]{3,}|https?://|www\.|\b[\w\-]+\.(?:com|co|org|net|in|uk|pk|io|au|ca|us)\b|[\w.+-]+@[\w-]+\.\w+"
+    r"|\+?\d[\d\s\-()]{7,}\d", re.I)
+_SOCIAL_ONLY_RE = re.compile(r"^(?:like|comment|share|save|send|follow(?: us)?(?: on)?|swipe\W*|get started\W*|[\W_]|\s)+$", re.I)
+
+
+def _ocr_lines(path):
+    import winocr
+    from PIL import Image
+    r = winocr.recognize_pil_sync(Image.open(path).convert("RGB"), "en")
+    return [l["text"].strip() for l in r.get("lines") or [] if l.get("text", "").strip()] or \
+        [x for x in (r.get("text") or "").split("\n") if x.strip()]
+
+
+def slide_text(path):
+    """Instagram slide ka text (OCR) — doosri company ka @handle / website / email / phone aur like-share lines hata kar."""
+    keep = [l for l in _ocr_lines(path) if not _FOREIGN_LINE_RE.search(l) and not _SOCIAL_ONLY_RE.match(l)]
+    return "\n".join(keep).strip()
+
+
+def _words(text):
+    return set(re.findall(r"[a-z]{3,}", (text or "").lower()))
+
+
+def text_match(a, b):
+    """Do texts kitne milte hain (0..1) — OCR ki ghalti ke bawajood lafzon se."""
+    wa, wb = _words(a), _words(b)
+    return len(wa & wb) / max(1, min(len(wa), len(wb))) if wa and wb else 0.0
+
+
+async def reorder_by_text(batch, out_dir, names):
+    """ChatGPT carousel ki slides apne order mein bhi bana deta hai (Linkedup: 'Slide 2' file mein asal slide 3).
+    Har bani image ka OCR asal slide ke text se milao -> file sahi slide ke naam par. Pakka na ho -> jaisa hai."""
+    have = [o for o in batch if o.get("file") and o.get("expect_text")]
+    if len(have) < 2:
+        return
+    try:
+        got = [" ".join(await asyncio.to_thread(_ocr_lines, o["file"])) for o in have]
+    except Exception as e:
+        log(f"  (slide order check nahi hua: {e})")
+        return
+    score = [[text_match(g, o["expect_text"]) for o in have] for g in got]  # score[file][slot]
+    pairs = sorted(((score[i][j], i, j) for i in range(len(have)) for j in range(len(have))), reverse=True)
+    pick, used_i, used_j = {}, set(), set()
+    for s, i, j in pairs:  # sab se pakki jodi pehle
+        if i not in used_i and j not in used_j and s >= 0.35:
+            pick[i] = j
+            used_i.add(i)
+            used_j.add(j)
+    if len(pick) < len(have) or all(i == j for i, j in pick.items()):
+        return
+    files = [Path(o["file"]) for o in have]
+    tmp = [f.with_name(f.stem + "_reorder" + f.suffix) for f in files]
+    for f, t in zip(files, tmp):
+        f.replace(t)
+    for i, j in pick.items():
+        dest = files[j]
+        tmp[i].replace(dest)
+        have[j]["file"] = str(dest)
+    moved = [f"{have[j]['name']} <- {have[i]['name']}" for i, j in pick.items() if i != j]
+    log(f"  Slide order theek kiya (OCR se): {'; '.join(moved)}")
+
+
 async def is_cta_slide(path):
     """Last slide OCR se parho: agar sirf kisi company ka CTA hai (follow us, call, website...) -> True."""
     try:
@@ -1742,6 +1807,7 @@ class Chat:
         return any(re.search(r"stop", f"{b.get('aria') or ''} {b.get('testid') or ''}", re.I) for b in btns)
 
     async def send(self, text, files=()):
+        await ensure_chat_mode(self)  # Work mode kabhi nahi (har message se pehle 'Chat')
         payload = []
         for f in files:
             f = Path(f)
@@ -2103,6 +2169,19 @@ async def ensure_chat_mode(chat):
             await run_sleep(2)
     except Exception:
         pass  # purani extension / toggle nahi -> jaisa hai
+    if chat.role == "waseem":  # aap ka rule: Thinking effort hamesha High
+        await chat_mode_ok(chat, set_high=True)
+
+
+async def chat_mode_ok(chat, set_high=False):
+    """Chat normal (Work nahi) aur Thinking effort High? Pata na chal sake -> True (jaisa hai chalne do)."""
+    try:
+        r = await HUB.exec(chat.role, chat.tab, "chat_mode_info", set_high, timeout=30) or {}
+    except Exception:
+        return True
+    if set_high and r.get("effort") and r["effort"].lower() != "high":
+        log(f"  (ChatGPT effort '{r['effort']}' — High nahi ho saka)")
+    return not r.get("work") and (not r.get("effort") or r["effort"].lower() == "high")
 
 
 async def create_waseem_chat(waseem, company, instructions, files=()):
@@ -2178,10 +2257,23 @@ async def refresh_company_chat(waseem, company, old_cid, old_title):
     (instructions + naam) -> purani ka naam 'OLD - ...' (script phir kabhi nahi kholti)."""
     log(f"  {company}: chat bhaari / atki — instructions le kar NAYI chat bana raha hoon")
     await waseem.goto(f"{CHATGPT}/c/{old_cid}")
-    sent_at = await waseem.send(CFG["wajid_ask_message"])
-    await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
+    # pehle chat mein jo instructions pehle se hain (chat banate waqt ka pehla message) — High par ChatGPT se
+    # dobara likhwana 10+ minute leta tha (ENDURING: time-out, nayi chat bani hi nahi)
     text = ""
-    for _ in range(3):
+    try:
+        conv = await waseem.conversation(old_cid)
+        text = existing_instructions(conv) or next(
+            (p for m in ordered_messages(conv) if m["author"]["role"] == "user"
+             for p in (m.get("content") or {}).get("parts") or [] if isinstance(p, str) and len(p) >= 300), "")
+    except Exception as e:
+        log(f"  (purani chat parhi nahi: {e})")
+    if len(text) >= 300:
+        log("  Purani chat ki instructions mil gayin (ChatGPT se dobara likhwaye baghair)")
+        sent_at = None
+    else:
+        sent_at = await waseem.send(CFG["wajid_ask_message"])
+        await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
+    for _ in range(3 if sent_at is not None else 0):
         await run_sleep(4)
         conv = await waseem.conversation(old_cid)
         text = assistant_text_after(conv, sent_at)
@@ -2210,13 +2302,26 @@ async def refresh_company_chat(waseem, company, old_cid, old_title):
 
 async def resolve_company_chat(waseem, company, terms, doc_text, out_dir):
     cid, found = await waseem.find_chat(terms, company, doc_text)
+    if cid and norm(company) not in chat_refresh_pending():
+        # aap ka rule: purani chat Work mode / High ke ilawa effort par ho -> instructions le kar NAYI chat (Chat + High)
+        try:
+            await waseem.goto(f"{CHATGPT}/c/{cid}")
+            if not await chat_mode_ok(waseem):
+                log(f"  \"{found}\" chat Work mode / High ke baghair hai — nayi chat (Chat + High) banegi")
+                mark_chat_refresh(company)
+        except ChatLimit:
+            raise
+        except Exception as e:
+            log(f"  (chat mode check: {e})")
     if cid and norm(company) in chat_refresh_pending():
         try:
             return await refresh_company_chat(waseem, company, cid, found), None
         except ChatLimit:
             raise
         except Exception as e:
-            log(f"  (nayi chat nahi bani: {e} — purani chat se hi)")
+            log(f"  (nayi chat nahi bani: {type(e).__name__}: {e} — purani chat se hi)")
+            mark_chat_refresh(company, add=False)  # har file par 5 min zaya na hon; purani chat Chat + High par set hoti hai
+            log("    " + " | ".join(traceback.format_exc().strip().splitlines()[-4:]))
     if cid:
         log(f"  Waseem mein chat mili: \"{found}\"")
         return cid, None
@@ -2730,7 +2835,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         except ChatLimit:
             raise
         except Exception as e:
-            log(f"  (beech mein nayi chat nahi bani: {e} — isi chat mein jaari)")
+            log(f"  (beech mein nayi chat nahi bani: {type(e).__name__}: {e} — isi chat mein jaari)")
             return
         HUB.stuck_events = 0
         uploaded.clear()  # nayi chat mein photos / logo dobara lagenge
@@ -2819,25 +2924,56 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                         head = CFG["batch_posts_note"].format(n=len(todo_b), what=("stories" if key == "stories" else "posts"),
                                                               size=("9:16" if key == "stories" else "4:5"))
                     msg_b = head + "\n\n" + msg_b + "\n\n" + CFG["batch_order_note"].format(n=len(todo_b), order=order)
+                    if carousel and todo_b[0]["d"].get("ig_album"):
+                        # Instagram album: aap ka apna chhota message — lambi hidayat se ChatGPT ulajhta tha
+                        # (slides dobara, Python se slides, ghanta bhar)
+                        msg_b = CFG["instagram_album_short"].format(n=len(todo_b), company=company)
+                        # aap ka tareeqa: screenshot nahi, har slide ka TEXT (screenshot ki branding copy na ho)
+                        shots = [s for o in todo_b for s in (o["d"].get("ig_shot") or [])[:1]]
+                        try:
+                            texts = [await asyncio.to_thread(slide_text, s) for s in shots]
+                        except Exception as e:
+                            texts = []
+                            log(f"  (slide OCR nahi chala: {e} — screenshots bhej raha hoon)")
+                        if len(texts) == len(todo_b) and all(len(t.split()) >= 3 for t in texts):
+                            for o, t in zip(todo_b, texts):
+                                o["expect_text"] = t
+                            msg_b = CFG["instagram_album_text"].format(n=len(todo_b), company=company) + "\n\n" + \
+                                "\n\n".join(f"Slide {k}:\n{t}" for k, t in enumerate(texts, 1))
+                            files_b = [f for f in files_b if f not in set(shots)]
+                            log(f"  Carousel: {len(todo_b)} slides ka text (OCR) bheja — screenshots nahi")
+                        elif texts:
+                            log("  (kisi slide ka text OCR se nahi nikla — is carousel ke screenshots bhej raha hoon)")
+                        if attempt:
+                            msg_b = CFG["batch_carousel_continue_note"].format(n=len(todo_b), total=len(batch)) \
+                                + "\n\n" + msg_b
                     tag = f"_retry{attempt}" if attempt else ""
                     (out_dir / f"chatgpt_message_{names[id(todo_b[0])]}_batch{tag}.txt").write_text(msg_b, encoding="utf-8")
                     log(f"  Waseem: {len(todo_b)} images ({key}) EK message mein" + (f" (baqi slides, koshish {attempt + 1})" if attempt else ""))
                     sent_at = await send_with_limit_retry(msg_b, files_b)
+                    for o in todo_b:
+                        o["tries"] = o.get("tries", 0) + 1
                     uploaded |= set(files_b)
                     group += [o for o in todo_b if all(o is not g for g in group)]
                     ids = await wait_for_images(waseem, cid, before, len(todo_b), sent_at=sent_at)
                     if len(ids) > len(todo_b):
                         ids = ids[-len(todo_b):]
-                    for o, fid in zip(todo_b, ids):  # ChatGPT order mein banata hai
+                    for o, fid in zip(todo_b, ids):  # ChatGPT aam tor par order mein banata hai (neeche OCR se check)
                         try:
                             o["file"] = await download_generated(waseem, cid, fid, out_dir / names[id(o)])
                         except Exception as e:  # ek image save na ho -> poori file fail nahi; woh alag message mein
                             log(f"  ✘ {o['name']}: image save nahi hui ({e or type(e).__name__}) — alag message mein dobara")
                             o.pop("file", None)
                             continue
-                        if drop_duplicate(o, outs):
-                            continue  # wahi image dobara -> yeh post nahi bani, alag message mein
-                        save_progress(doc_key, o["name"], o["file"])
+                        drop_duplicate(o, outs)  # wahi image dobara -> yeh post nahi bani, alag message mein
+                    if carousel:
+                        for o in todo_b:  # writer ki carousel: slide ka apna heading
+                            if not o.get("expect_text") and not o["d"].get("ig_shot"):
+                                o["expect_text"] = o["d"].get("content") or ""
+                        await reorder_by_text(todo_b, out_dir, names)
+                    for o in todo_b:
+                        if o.get("file"):
+                            save_progress(doc_key, o["name"], o["file"])
                     if len(ids) < len(todo_b):
                         log(f"  {len(todo_b) - len(ids)} image batch mein nahi bani — "
                             + ("usi carousel ka agla message" if carousel else "woh alag message mein banwa raha hoon"))
@@ -2851,9 +2987,12 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     singles = [o for o in outs if not o.get("file")]
     if singles:
         log(f"  Waseem: {len(singles)} image(s) alag alag message mein")
+    max_tries = CFG.get("max_tries_per_image", 2)
     for output in singles:
         if limit_hit:  # limit retry ke baad bhi -> baqi images pending (jo bani hain woh save hongi)
             summary.setdefault("image_fail", []).append(f"{who(output)}: ChatGPT limit — nahi bani")
+            continue
+        if output.get("tries", 0) >= max_tries:  # aap ka rule: 2 dafa nahi bani -> khud banao, aage chalo
             continue
         await maybe_switch_chat()
         await rest_break(single=True)
@@ -2871,13 +3010,15 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
                                "or repeat previous images. One scene, one standalone file; no panels or collage.")
             (out_dir / f"chatgpt_message_{names[id(output)]}.txt").write_text(single_msg, encoding="utf-8")
             sent_at = await send_with_limit_retry(single_msg, single_files)
+            output["tries"] = output.get("tries", 0) + 1
             uploaded |= set(single_files)
             ids = await wait_for_images(waseem, cid, before, 1, sent_at=sent_at,
                                         retry_request=lambda: send_with_limit_retry(single_msg, single_files))
-            if not ids and output["d"].get("carousel"):  # carousel ki slide chhootni nahi -> ek aur poori koshish
+            if not ids and output["d"].get("carousel") and output["tries"] < max_tries:  # slide: ek aur koshish (2 tak)
                 log(f"  {output['name']}: carousel slide nahi bani — ek aur dafa bhej raha hoon")
                 before = set(await page_image_refs(waseem, cid))
                 sent_at = await send_with_limit_retry(single_msg, single_files)
+                output["tries"] += 1
                 ids = await wait_for_images(waseem, cid, before, 1, sent_at=sent_at,
                                             retry_request=lambda: send_with_limit_retry(single_msg, single_files))
             if not ids:
@@ -2910,6 +3051,13 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         for o in group:
             if not o.get("file"):
                 summary.setdefault("image_fail", []).append(f"{who(o)}: ChatGPT limit — nahi bani")
+    else:
+        for o in outs:
+            if not o.get("file") and o.get("tries", 0) >= max_tries:
+                tag = who(o)
+                summary["image_fail"] = [x for x in summary.get("image_fail") or [] if not str(x).startswith(tag)]
+                summary.setdefault("manual_todo", []).append(f"{tag}: {o['tries']} dafa try ke baad bhi nahi bani")
+                log(f"  ✘ {o['name']}: {o['tries']} dafa nahi bani — aap khud banao (file aage chalegi)")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     qa_dir = out_dir / "_rejected"  # ghalat nikli images (sirf record ke liye)
@@ -3132,6 +3280,7 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
     reply_since = sent_at if sent_at is not None else time.time() - 5
     last_count, last_change, nudged, new_ids, limit_waits = -1, run_time(), False, [], 0
     retry_clicks = 0  # ChatGPT ka "Try again" (image glitch) kitni dafa dabaya
+    idle_since = None  # ChatGPT kab se LAGATAAR ruka hua hai (Thinking ke beech stop button pal bhar gayab hota hai)
     # Page par MERE AAKHRI message ke baad wali generated images dekho (ginti nahi — lambi chat mein ChatGPT
     # purane turns page se hata deta hai). Jo image ek dafa dikhi, yaad rehti hai (nudge ke baad bhi).
     seen = []
@@ -3199,7 +3348,25 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
             last_count, last_change = len(new_ids), run_time()
             log(f"  Images ready: {len(new_ids)}/{expected}")
         busy = await waseem.generating()
+        thinking = False  # sirf nudge ke faisle ke liye (image khatam hone ka faisla stop button se hi)
+        if not busy:  # Thinking model: "Thinking / Creating image" likha ho to abhi kaam chal raha hai
+            try:
+                tail = (await HUB.exec(waseem.role, waseem.tab, "page_text_tail", 400) or "")[-400:]
+                thinking = bool(re.search(r"Thinking|Creating image|Generating|Reasoning", tail))
+            except Exception:
+                pass
+        idle_since = None if (busy or thinking) else (idle_since or run_time())
         if len(new_ids) >= expected and not busy:
+            # generation ke dauran page par preview / adhoori images bhi dikhti hain (Belle 15: Post 2 = Post 1,
+            # Post 3 = Post 2). Kaam khatam -> ChatGPT ki apni list (sahi order, sirf final images) lo.
+            if sent_at is not None:
+                try:
+                    final = [i for i in image_ids_after(await waseem.conversation(cid), sent_at)
+                             if image_key(i) not in excluded]
+                    if len(final) >= expected:
+                        return final
+                except Exception as e:
+                    log(f"  (final images API check: {e} — page wali list)")
             break
         # ChatGPT kabhi image bana kar neeche "Try again" de deta hai (server glitch) — 18 minute intezar nahi:
         # image dikh rahi ho to woh le lo; na dikhe to "Try again" dabao (2 dafa tak)
@@ -3243,7 +3410,8 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
                 reply_since = await retry_request() if retry_request else await waseem.send(CFG["nudge_message"])
                 last_change, end = run_time(), run_time() + t["image_generation"] * 60
                 continue
-        if not busy and run_time() - last_change > t["idle_after_images"] * 60:
+        if not busy and not thinking and run_time() - last_change > t["idle_after_images"] * 60 \
+                and run_time() - idle_since > CFG.get("idle_confirm_seconds", 90):
             if nudged:
                 break  # ek dafa yaad dila diya, jo bana wo le lo
             # Verify the server record immediately before asking for another image.
@@ -3405,7 +3573,23 @@ async def create_part_doc(title, sections):
             doc_id = m.group(1)
             break
     if not doc_id:
+        await close_quietly(tab)
         raise RuntimeError("nayi Google Doc nahi khuli")
+    try:
+        return await _fill_part_doc(tab, doc_id, title, sections, html, text)
+    except Exception:
+        await close_quietly(tab)  # khali doc khuli na rahe (warna woh line mein aa kar "khali" file banti hai)
+        raise
+
+
+async def close_quietly(tab):
+    try:
+        await HUB.call("designer", "close_tab", tabId=tab, timeout=20)
+    except Exception:
+        pass
+
+
+async def _fill_part_doc(tab, doc_id, title, sections, html, text):
     for _ in range(5):  # naam sach mein laga? (Dental 1-3: "Untitled document" reh gaya tha) -> tab ka title dekho
         await HUB.call("designer", "focus_tab", tabId=tab)
         await HUB.exec("designer", tab, "gdoc_set_title", title)
@@ -3442,6 +3626,35 @@ def load_splits():
 def save_splits(data):
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     SPLITS_FILE.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+async def trim_original_doc(tab, doc_id, first_sections, moved_labels):
+    """Asal bari file mein sirf set 1 (posts 1-3 + story) rakho — baqi posts ab apni nayi docs mein hain.
+    Pakka na ho sake to asal doc waisi hi rehti hai (sirf log), file phir bhi set 1 banati hai."""
+    html, text = part_html(first_sections)
+    HUB.designer_busy = True
+    try:
+        await HUB.call("designer", "focus_tab", tabId=tab)
+        await run_sleep(2)
+        doc_len = len("\n".join(l for l, _ in await fetch_doc(tab, doc_id)))  # poora select hua? isi se check
+        r = await HUB.exec("designer", tab, "gdoc_replace_all", html, text, doc_len) or {}
+        if not r.get("ok"):
+            log(f"  (asal doc chhoti nahi hui: {r.get('error')} — asal doc mein poora content reh gaya)")
+            return False
+        for _ in range(4):  # Docs save hone mein kuch second lagte hain
+            await run_sleep(6)
+            got = norm("\n".join(l for l, _ in await fetch_doc(tab, doc_id)))
+            first_ok = not first_sections or norm(first_sections[0]["label"]) in got
+            if first_ok and not any(norm(lbl) in got for lbl in moved_labels if len(norm(lbl)) > 4):
+                log("  Asal doc mein ab sirf set 1 (posts 1-3 + story) — baqi nayi docs mein")
+                return True
+        log("  ⚠ asal doc check: content poora nahi badla — doc khud dekh lein")
+        notify("Asal doc check karein", "Bari file ki asal doc chhoti karte waqt content theek nahi badla — doc dekh lein.")
+    except Exception as e:
+        log(f"  (asal doc chhoti nahi hui: {e})")
+    finally:
+        HUB.designer_busy = False
+    return False
 
 
 async def split_doc_into_parts(folder, doc, sets):
@@ -3652,6 +3865,9 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
             if doc_id not in splits and not already_started:
                 splits[doc_id] = await split_doc_into_parts(summary["file"], doc, sets)
                 save_splits(splits)
+                if splits[doc_id]:  # baqi posts nayi docs mein chali gayin -> asal doc mein sirf set 1 (+ story)
+                    await trim_original_doc(tab_id, doc_id, part_sections(doc, sets)[0],
+                                            [s["label"] for p in part_sections(doc, sets)[1:] for s in p])
             if doc_id in splits:  # (dobara chale to nayi docs dobara nahi banti)
                 keep = {id(o["d"]) for o in sets[0][1]}
                 designs = [d for d in designs if id(d) in keep]
@@ -3815,7 +4031,7 @@ def write_file_report(out_dir, summary):
         status = "skipped"
     data = {k: summary.get(k) for k in ("file", "designs", "made", "error", "image_fail", "qa_fail", "dropped",
                                          "story_skipped", "reels", "done", "final_dir", "format_check",
-                                         "qa_unverified", "manual_reason")}
+                                         "qa_unverified", "manual_reason", "manual_todo")}
     data.update(status=status, finished=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -3863,13 +4079,14 @@ def write_report(report, day_dir):
             if r.get("manual_reason"):
                 lines.append(f"     ! BRANDING        {r['manual_reason']}")
             lines.append("")
-    extra = [r for r in report if r.get("story_skipped") or r["reels"] or r.get("format_check")
+    extra = [r for r in report if r.get("story_skipped") or r.get("manual_todo") or r["reels"] or r.get("format_check")
              or r.get("qa_unverified") or r["done"]]
     if extra:
         lines += ["-" * 70, "AAP KHUD BANAO / DEKH LO", "-" * 70]
         for r in extra:
             lines.append(f"> {r['file']}")
             lines += [f"     STORY (khud banao)   {x}" for x in r.get("story_skipped", [])]
+            lines += [f"     POST (khud banao)    {x}" for x in r.get("manual_todo", [])]
             lines += [f"     REEL (khud banao)    {x}" for x in r["reels"]]
             lines += [f"     HEADING CHECK KARO   {x}" for x in r.get("format_check", [])]
             lines += [f"     IMAGE KHUD DEKH LO   {x}  (QA confirm nahi hua)" for x in r.get("qa_unverified", [])]

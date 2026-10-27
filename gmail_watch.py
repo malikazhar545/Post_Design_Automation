@@ -268,9 +268,8 @@ def _done_keys_this_month(state):
     for v in state.values():
         if v.get("status") != "done":
             continue
-        at = str(v.get("at") or "")
-        if at and not at.startswith(month):
-            continue  # at ho to isi mahine; at na ho (purana record) to bhi DONE maano
+        if not str(v.get("at") or "").startswith(month):
+            continue  # naam se "ban chuki" sirf ISI MAHINE ki (agle mahine wahi number — Wear Wood 8 — nayi file)
         k = _file_key(v.get("title") or "")
         if k:
             keys.add(k)
