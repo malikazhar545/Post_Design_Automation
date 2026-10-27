@@ -524,6 +524,22 @@ const PAGE = {
     target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
     return { ok: true };
   },
+  gdoc_trash: async function () {
+    // Docs: File -> Move to trash (sirf test / khali docs ke liye)
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const mouse = el => { for (const t of ['mousedown', 'mouseup', 'click'])
+      el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })); };
+    const menu = document.querySelector('#docs-file-menu');
+    if (!menu) return { ok: false, error: 'File menu nahi mila' };
+    mouse(menu);
+    await sleep(800);
+    const item = [...document.querySelectorAll('.goog-menuitem, [role="menuitem"]')]
+      .find(e => e.offsetParent && /move to (trash|bin)/i.test((e.innerText || '').trim()));
+    if (!item) return { ok: false, error: '"Move to trash" nahi mila' };
+    mouse(item);
+    await sleep(1500);
+    return { ok: true, text: (document.body.innerText || '').slice(0, 200) };
+  },
   gdoc_set_title: function (title) {
     // insaan ki tarah: sab select -> naya naam type (execCommand) -> Enter; sirf value badalne se Docs save nahi karta
     const input = document.querySelector('input.docs-title-input');

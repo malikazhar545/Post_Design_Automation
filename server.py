@@ -4411,8 +4411,7 @@ async def run_all(only=None, only_post=None):
                 continue
             log(f"[{i}/{total}] {title}  ->  company: {company}  (search: {' | '.join(terms)})")
             folder = folder_of(title)
-            if norm(folder) in HUB.skip:  # dashboard se skip
-                HUB.skip.discard(norm(folder))
+            if norm(folder) in HUB.skip:  # dashboard se skip (yaad rehta hai jab tak aap unskip na karein)
                 log(f"[{i}/{total}] SKIP (dashboard se): {title}")
                 report.append({"file": folder, "reels": [], "done": [], "designs": 0, "error": None, "skipped": True})
                 write_file_report(OUT_ROOT / today / folder, report[-1])
@@ -4478,7 +4477,6 @@ async def run_all(only=None, only_post=None):
                 log(f"[{i}/{total}] {folder}: {e.company} ki aaj {company_items(e.company)} posts ban chuki (had "
                     f"{day_items()}, reels samait) — yeh {'set' if summary.get('part') else 'file'} ({e.need}) agle din")
             except FileSkipped:
-                HUB.skip.discard(norm(folder))
                 summary["skipped"] = True
                 log(f"[{i}/{total}] SKIP (dashboard se, beech mein): {title} — jo images ban chuki woh mehfooz; DONE nahi")
             except Exception as e:
@@ -4604,16 +4602,36 @@ async def dashboard_action(do):
     return {"ok": False, "message": f"Unknown action: {do}"}
 
 
+SKIP_FILE = OUT_ROOT / "skip.json"  # dashboard skip restart ke baad bhi yaad (date docs / Molen tax har dafa)
+
+
+def load_skips():
+    try:
+        HUB.skip |= set(json.loads(SKIP_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+
+
+def save_skips():
+    try:
+        SKIP_FILE.write_text(json.dumps(sorted(HUB.skip), ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def dashboard_skip(do, file):
-    """Dashboard ka Skip button: sirf woh file chhodo jis par aap ne Skip dabaya (baqi sab banti hain)."""
+    """Dashboard ka Skip button: sirf woh file chhodo jis par aap ne Skip dabaya (baqi sab banti hain).
+    Skip yaad rehta hai (restart ke baad bhi) jab tak aap 'unskip' na karein."""
     if not file:
         return {"ok": False, "message": "File ka naam nahi mila"}
     if do == "skip":
         HUB.skip.add(norm(file))
+        save_skips()
         running = norm(HUB.current.get("file", "")) == norm(file)
         log(f"Dashboard: '{file}' skip " + ("— agle safe point par chhod kar agli file" if running else "— baari aane par"))
         return {"ok": True, "message": f"'{file}' skip hogi" + (" (abhi wali — agle safe point par)" if running else "")}
     HUB.skip.discard(norm(file))
+    save_skips()
     log(f"Dashboard: '{file}' skip wapis — yeh file banegi")
     return {"ok": True, "message": f"'{file}' ab banegi"}
 
@@ -4769,6 +4787,8 @@ async def main():
         print("Chaaron Chrome profiles kholo -> Designer extension ka START dabao.\n")
         print(f"DASHBOARD: http://127.0.0.1:{PORT}/   (OPEN_DASHBOARD.bat se bhi khulta hai)\n")
         cleanup_old_outputs()  # 7 din se purane Output\\<date> folders (space)
+        if PORT == 8765:
+            load_skips()  # pichli dafa ki skip ki hui files (date docs / Molen tax)
         asyncio.create_task(auto_resume())  # bijli / restart ke baad adhoora kaam khud
         gmail_watch.setup(sys.modules[__name__])
         asyncio.create_task(watch_open_docs())  # nayi kholi files dashboard par fauran

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Post Automation - ENVATO",
-  "version": "6.1",
+  "version": "6.2",
   "description": "Post design automation helper (ENVATO profile)",
   "permissions": [
     "tabs",
