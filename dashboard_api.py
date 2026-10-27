@@ -59,6 +59,90 @@ def read_json(path, default):
         return default
 
 
+
+def _downloads_roots():
+    """config final_dir + Downloads — Open Folder ke candidates."""
+    roots = []
+    cfg = read_json(Path(__file__).resolve().parent / "config.json", {})
+    if cfg.get("final_dir"):
+        roots.append(Path(cfg["final_dir"]).expanduser())
+    roots.append(Path.home() / "Downloads")
+    out, seen = [], set()
+    for r in roots:
+        try:
+            key = str(r.resolve()).lower()
+        except OSError:
+            key = str(r).lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def resolve_open_folder(folder, company, report=None):
+    """Har created file: report.final_dir → Downloads\\date\\company\\… → Output folder."""
+    report = report or {}
+    raw = report.get("final_dir")
+    if raw:
+        try:
+            p = Path(raw)
+            if p.is_dir():
+                return str(p.resolve())
+        except OSError:
+            pass
+    day = folder.parent.name if DAY_RE.match(folder.parent.name or "") else None
+    company_safe = re.sub(r'[<>:"/\\|?*]', "", company or "").strip()
+    if day and company_safe:
+        rest = folder.name
+        for w in company_safe.split():
+            if rest.lower().startswith(w.lower()):
+                rest = rest[len(w):].lstrip(" -_")
+            else:
+                break
+        rest = re.sub(r'[<>:"/\\|?*]', "", rest).strip(" .")
+        for root in _downloads_roots():
+            base = root / day / company_safe
+            if not base.is_dir():
+                continue
+            if rest:
+                cand = base / rest
+                try:
+                    if cand.is_dir() and any(cand.iterdir()):
+                        return str(cand.resolve())
+                except OSError:
+                    pass
+            try:
+                kids = [c for c in base.iterdir() if c.is_dir()]
+            except OSError:
+                kids = []
+            nonempty = []
+            for c in kids:
+                try:
+                    if any(c.iterdir()):
+                        nonempty.append(c)
+                except OSError:
+                    pass
+            if rest:
+                num = re.search(r"\d+", rest)
+                if num:
+                    hit = [c for c in nonempty if num.group(0) in c.name]
+                    if len(hit) == 1:
+                        return str(hit[0].resolve())
+            if len(nonempty) == 1:
+                return str(nonempty[0].resolve())
+            try:
+                if any(base.iterdir()):
+                    return str(base.resolve())
+            except OSError:
+                pass
+    try:
+        if folder.is_dir():
+            return str(folder.resolve())
+    except OSError:
+        pass
+    return None
+
+
 def scan_file(folder, company_fn, state_by_title, current_folder=None, old_reels=None):
     """Ek file folder: kitni images (qism-wise), kab bani, kya hal hai, kya masle."""
     counts = {k: 0 for k in KINDS}
@@ -80,15 +164,18 @@ def scan_file(folder, company_fn, state_by_title, current_folder=None, old_reels
         status = "done" if st == "done" else ("error" if st == "error" else "unknown")
     issues = []
     for key, label in (("image_fail", "Nahi bani"), ("qa_fail", "Ghalat bani"), ("dropped", "Samajh nahi aayi")):
-        issues += [{"type": label, "text": x} for x in report.get(key) or []]
+        for x in dict.fromkeys(report.get(key) or []):  # retry mein wahi masla dobara likha gaya -> ek hi dafa dikhao
+            issues.append({"type": label, "text": x})
     if report.get("error") and not issues:
         issues.append({"type": "File error", "text": report["error"]})
     todo = [{"type": "Story khud banao", "text": x} for x in report.get("story_skipped") or []]
     todo += [{"type": "Reel khud banao", "text": x} for x in reels or []]
-    return {"file": folder.name, "company": company_fn(folder.name), "counts": counts, "status": status,
+    company = company_fn(folder.name)
+    return {"file": folder.name, "company": company, "counts": counts, "status": status,
             "first": min(times) if times else None, "last": max(times) if times else None,
-            "issues": issues, "todo": todo, "reels": len(reels or []), "final_dir": report.get("final_dir"),
-            "finished": report.get("finished")}
+            "issues": issues, "todo": todo, "reels": len(reels or []),
+            "final_dir": resolve_open_folder(folder, company, report),
+            "finished": report.get("finished"), "generation_retry_at": report.get("generation_retry_at")}
 
 
 def scan_day(day_dir, company_fn, state_by_title, current_folder=None):
@@ -101,6 +188,33 @@ def scan_day(day_dir, company_fn, state_by_title, current_folder=None):
         if rec:
             files.append(rec)
     return files
+
+
+def resolve_company_folder(date, company, files):
+    """Company-level Open Folder: Downloads\\date\\company (warna pehli file ke folder ka parent)."""
+    company_safe = re.sub(r'[<>:"/\\|?*]', "", company or "").strip()
+    if date and company_safe and DAY_RE.match(date):
+        for root in _downloads_roots():
+            base = root / date / company_safe
+            try:
+                if base.is_dir() and any(base.iterdir()):
+                    return str(base.resolve())
+            except OSError:
+                pass
+    for f in files or []:
+        fd = f.get("final_dir")
+        if not fd:
+            continue
+        try:
+            p = Path(fd)
+            if p.is_dir():
+                parent = p.parent
+                if company_safe and parent.name.lower() == company_safe.lower() and parent.is_dir():
+                    return str(parent.resolve())
+                return str(p.resolve())
+        except OSError:
+            continue
+    return None
 
 
 def summarize(date, files):
@@ -116,6 +230,8 @@ def summarize(date, files):
             t["done"] += f["status"] == "done"
             t["issues"] += len(f["issues"])
             t["reels"] += f.get("reels", 0)
+    for c in companies.values():
+        c["company_dir"] = resolve_company_folder(date, c["company"], c["files"])
     return {"date": date, "totals": totals,
             "companies": sorted(companies.values(), key=lambda c: -sum(c["totals"][k] for k in KINDS))}
 

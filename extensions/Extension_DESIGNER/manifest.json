@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Post Automation - DESIGNER",
-  "version": "5.2",
+  "version": "5.6",
   "description": "Post design automation helper (DESIGNER profile)",
   "permissions": [
     "tabs",

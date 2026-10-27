@@ -5,12 +5,11 @@ alwaysApply: true
 
 # Claude baseline first (no new regressions)
 
-User reminder is **not** required. For **any** fix, feature, or behavior change in this repo:
+The working baseline is the commit "Restore Claude baseline (a2a1d5e) ..." (2026-10-27). Earlier Codex/Cursor
+changes (compose/attach rewrite, 'Connection interrupted' page-text detection, 30-min generation retry,
+re-randomised custom refs, scripts that delete DONE records) broke the automation and were removed.
 
-1. **Compare first** against Claude’s last good static state — prefer git `f5887f1` (and related Claude commits such as reel DONE `507a40f`) / `origin/main` when that is the known-good workflow. Diff the relevant functions before editing.
-2. **Reuse that logic** — copy Claude’s working code path; do not invent a parallel design.
-3. **Slight modify only if needed** — e.g. a new doc format (`POST | REEL`, `REEL COVER`) that Claude’s parse missed. Keep Claude’s DONE / skip / gmail / split / chat rules intact.
-4. **Do not introduce new failure modes** — especially: reel-only files must DONE (not ERROR incomplete); no reopen of DONE Gmail files; no duplicate opens; posts+story must not wrongly split; random-4 custom refs stay Claude-style.
-5. After a change, briefly confirm it still matches Claude’s outcome for that case (e.g. “5 reel skip → DONE”).
-
-Baseline tip: `git show f5887f1:server.py` (or the file you are editing) before patching.
+1. Diff against that baseline before editing; reuse its code paths.
+2. Never change the extension `compose` / attach logic or add retry loops without testing in the real browser.
+3. Never delete DONE records in Output/state.json (that re-made finished files = duplicate posts).
+4. Custom references: random 4 of the dashboard list, chosen ONCE per file; a failed upload never fails the file.

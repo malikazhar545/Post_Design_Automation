@@ -25,6 +25,13 @@ class CompanyReferencesTests(unittest.IsolatedAsyncioTestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
+    def test_company_from_title_keeps_design_in_name_and_strips_metadata(self):
+        self.assertEqual(server.company_from_title('By Design Property Management 4 - Google Docs'),
+                         'By Design Property Management')
+        self.assertEqual(server.company_from_title('Molen_Tax_Image_Details_From_10-3.docx'), 'Molen Tax')
+        self.assertEqual(server.company_from_title('Belle Clinic London UK 15'), 'Belle Clinic London UK')
+        self.assertEqual(server.company_from_title('Aim Tech Design Posts 5'), 'Aim Tech')
+
     def test_ten_paths_persist_exact_company_and_clear_restores_automatic(self):
         automatic = self.root / 'automatic' / 'Example'
         automatic.mkdir(parents=True)
@@ -34,7 +41,11 @@ class CompanyReferencesTests(unittest.IsolatedAsyncioTestCase):
             original = server.style_refs('Example')
             self.assertEqual(len(original), 4)
             references.save(self.store, 'Example', self.paths[:10])
-            self.assertEqual(server.style_refs('  EXAMPLE  '), list(map(Path, self.paths[:10])))
+            # Pool 10 save; har call pe random style_refs_max (4) — Claude-style
+            picked = server.style_refs('  EXAMPLE  ')
+            self.assertEqual(len(picked), 4)
+            pool = set(map(Path, self.paths[:10]))
+            self.assertTrue(all(p in pool for p in picked))
             self.assertIsNone(server.custom_reference_entry('Examples'))
             self.assertEqual(len(references.load(self.store)['example']['paths']), 10)
             references.save(self.store, 'Example', [])
@@ -48,11 +59,18 @@ class CompanyReferencesTests(unittest.IsolatedAsyncioTestCase):
                 references.save(self.store, 'Example', bad)
             self.assertEqual(references.load(self.store)['example']['paths'], self.paths[:1])
 
-    def test_missing_custom_file_does_not_fall_back(self):
+    def test_missing_custom_file_falls_back_without_failing(self):
+        # deleted custom image must never stop the file (posts still get made with folder refs)
         references.save(self.store, 'Example', self.paths[:1])
         Path(self.paths[0]).unlink()
-        with self.assertRaises(ValueError):
-            server.style_refs('Example')
+        self.assertNotIn(Path(self.paths[0]), server.style_refs('Example'))
+
+    def test_custom_pick_is_random_four_and_stable_within_file(self):
+        references.save(self.store, 'Example', self.paths[:6])
+        with patch.dict(server.HUB.current, {'file': 'Example 1'}, clear=True):
+            first = server.style_refs('Example')
+            self.assertEqual(len(first), 4)
+            self.assertEqual(server.style_refs('Example'), first)  # same file -> same set (no duplicate uploads)
 
     def test_alias_quotes_and_replacement_message(self):
         with patch.dict(server.CFG, {'company_aliases': {'Alias': 'Example'}}):

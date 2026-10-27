@@ -151,6 +151,12 @@ body { overflow-x: hidden; }
 .file + .file { border-top: 1px dashed var(--line); }
 .file-name { font-weight: 600; overflow-wrap: anywhere; }
 .file-time { font-size: 12.5px; color: var(--muted); }
+.folder-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; min-width: 0; }
+.folder-path { flex: 1 1 220px; min-width: 0; padding: 4px 0; border: 0; background: none; text-align: left;
+  font-size: 12.5px; color: var(--blue-text); overflow-wrap: anywhere; cursor: pointer; }
+.folder-path:hover { text-decoration: underline; }
+.folder-row .btn { min-height: 32px; padding: 0 9px; font-size: 12px; gap: 5px; }
+.folder-path:disabled { opacity: .5; cursor: wait; }
 .sbadge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
 .s-done { background: var(--green-bg); color: var(--green-text); }
 .s-incomplete { background: var(--amber-bg); color: var(--amber-text); }
@@ -250,7 +256,9 @@ th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--lin
 th { color: var(--muted); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
 td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
+tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
 .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.company-h .folder-row { flex: 1 1 100%; margin-top: 6px; }
 
 /* toast */
 .toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 50; width: min(380px, calc(100vw - 32px)); }
@@ -570,6 +578,39 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     if ($("#desktopNotif").checked && "Notification" in window && Notification.permission === "granted") new Notification(a.title, { body: a.message });
   }
   function note(message, ok = true) { toast({ title: ok ? "Theek hai" : "Nahi hua", message, level: ok ? "done" : "error" }); }
+  function folderHtml(path) {
+    if (!path) return "";
+    return `<div class="folder-row" data-folder-path="${esc(path)}">
+      <button type="button" class="folder-path" data-folder-action="open" title="Windows Explorer mein kholo">${esc(path)}</button>
+      <button type="button" class="btn" data-folder-action="copy" aria-label="Copy folder path">Copy</button>
+      <button type="button" class="btn" data-folder-action="open">Open Folder</button>
+    </div>`;
+  }
+  document.addEventListener("click", async e => {
+    const button = e.target.closest("[data-folder-action]");
+    if (!button || button.disabled) return;
+    const row = button.closest("[data-folder-path]"), path = row && row.dataset.folderPath;
+    if (!path) return;
+    const buttons = $$("button", row);
+    buttons.forEach(b => b.disabled = true);
+    try {
+      if (button.dataset.folderAction === "copy") {
+        await navigator.clipboard.writeText(path);
+        note("Folder path copy ho gaya");
+      } else {
+        const response = await fetch("/api/action?do=open_folder&path=" + encodeURIComponent(path),
+          { headers: { "X-Dashboard": "1" } });
+        const result = await response.json();
+        note(result.message, response.ok && result.ok);
+      }
+    } catch {
+      note(button.dataset.folderAction === "copy"
+        ? "Path copy nahi hua — browser ki clipboard permission check karein."
+        : "Folder nahi khula — server ka connection check karein.", false);
+    } finally {
+      buttons.forEach(b => b.disabled = false);
+    }
+  });
   $("#desktopNotif").checked = store.get("desktopNotif", false);
   $("#desktopNotif").onchange = async e => {
     if (e.target.checked && "Notification" in window && Notification.permission !== "granted") {
@@ -761,9 +802,13 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     const chips = (KINDS.filter(k => f.counts[k.k]).map(k => `<span class="chip" style="--c:${k.c}"><i></i>${cnt(f.counts[k.k], k)}</span>`).join("")
       || `<span class="chip">0 images</span>`) + reelChip(f.reels);
     const time = f.first ? `${fmtTime(f.first)}${f.last && f.last !== f.first ? " – " + fmtTime(f.last) : ""}` : "";
-    const issues = f.issues.map(i => `<div class="issue">${ico("x", "icon sm")}<div><b>${esc(i.type)}</b> · <span class="t">${esc(i.text)}</span><span class="hint">→ ${esc(hintFor(i.type + " " + i.text))}</span></div></div>`)
-      .concat(f.todo.map(i => `<div class="issue todo">${ico("info", "icon sm")}<div><b>${esc(i.type)}</b> · <span class="t">${esc(i.text)}</span></div></div>`)).join("");
-    return `<div class="file"><div><div class="file-name">${esc(f.file)}</div><div class="file-time">${time}${f.final_dir ? " · " + esc(f.final_dir) : ""}</div></div>
+    const issues = f.issues.map(i => {
+      const retryHint = f.generation_retry_at && ["Nahi bani", "File error"].includes(i.type)
+        ? "30 minute baad khud dobara banegi (pending nahi)"
+        : hintFor(i.type + " " + i.text);
+      return `<div class="issue">${ico("x", "icon sm")}<div><b>${esc(i.type)}</b> · <span class="t">${esc(i.text)}</span><span class="hint">→ ${esc(retryHint)}</span></div></div>`;
+    }).concat(f.todo.map(i => `<div class="issue todo">${ico("info", "icon sm")}<div><b>${esc(i.type)}</b> · <span class="t">${esc(i.text)}</span></div></div>`)).join("");
+    return `<div class="file"><div><div class="file-name">${esc(f.file)}</div><div class="file-time">${time}</div>${folderHtml(f.final_dir)}</div>
       <div class="chips">${chips}</div><span class="sbadge ${cls}">${ico(ic, "icon sm")}${lbl}</span>${issues ? `<div class="issues">${issues}</div>` : ""}</div>`;
   }
 
@@ -773,7 +818,8 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
     $("#todayList").innerHTML = today.companies.length ? today.companies.map(c => `<div class="company">
         <div class="company-h"><h3>${esc(c.company)}</h3><div class="chips">${KINDS.filter(k => c.totals[k.k]).map(k =>
           `<span class="chip" style="--c:${k.c}"><i></i>${cnt(c.totals[k.k], k)}</span>`).join("")}${reelChip(c.totals.reels)}</div>
-          <span class="muted" style="margin-left:auto">${c.totals.done}/${c.totals.files} file poori</span></div>
+          <span class="muted" style="margin-left:auto">${c.totals.done}/${c.totals.files} file poori</span>
+          ${folderHtml(c.company_dir)}</div>
         ${c.files.map(fileHtml).join("")}</div>`).join("")
       : `<div class="empty">${ico("image")}<div>Aaj abhi koi image nahi bani.</div><div class="muted">START dabao — banti hi yahan nazar aayengi.</div></div>`;
   }
@@ -869,9 +915,9 @@ tr.sub td { font-size: 13px; color: var(--text-2); padding-left: 26px; }
           ${d.totals.issues && !q ? `<span class="sbadge s-incomplete">${ico("alert", "icon sm")}${d.totals.issues} masle</span>` : "<span></span>"}
           <svg class="icon chev" aria-hidden="true"><use href="#i-chev"/></svg></button>
         <div class="day-body"><div class="tbl-wrap"><table><thead><tr><th>Company / file</th>${KINDS.map(k => `<th class="n">${k.label}</th>`).join("")}<th class="n">Reels (aap)</th><th>Hal</th></tr></thead><tbody>
-          ${d.companies.map(c => `<tr><td><b>${esc(c.company)}</b></td>${KINDS.map(k => `<td class="n"><b>${c.totals[k.k] || "–"}</b></td>`).join("")}<td class="n"><b>${c.totals.reels || "–"}</b></td><td>${c.totals.done}/${c.totals.files} poori</td></tr>`
+          ${d.companies.map(c => `<tr><td><b>${esc(c.company)}</b>${folderHtml(c.company_dir)}</td>${KINDS.map(k => `<td class="n"><b>${c.totals[k.k] || "–"}</b></td>`).join("")}<td class="n"><b>${c.totals.reels || "–"}</b></td><td>${c.totals.done}/${c.totals.files} poori</td></tr>`
             + c.files.map(f => { const [lbl, cls] = STATUS[f.status] || STATUS.unknown;
-              return `<tr class="sub"><td>${esc(f.file)}${f.first ? ` <span class="muted">· ${fmtTime(f.first)}</span>` : ""}</td>${KINDS.map(k => `<td class="n">${f.counts[k.k] || "–"}</td>`).join("")}<td class="n">${f.reels || "–"}</td>
+              return `<tr class="sub"><td>${esc(f.file)}${f.first ? ` <span class="muted">· ${fmtTime(f.first)}</span>` : ""}${folderHtml(f.final_dir)}</td>${KINDS.map(k => `<td class="n">${f.counts[k.k] || "–"}</td>`).join("")}<td class="n">${f.reels || "–"}</td>
                 <td><span class="sbadge ${cls}">${lbl}</span>${f.issues.length ? ` <span class="muted">${f.issues.length} masle</span>` : ""}</td></tr>`; }).join("")).join("")}
         </tbody></table></div></div></div>`; }).join("")
       : `<div class="empty">${ico("search")}<div>Kuch nahi mila</div></div>`;

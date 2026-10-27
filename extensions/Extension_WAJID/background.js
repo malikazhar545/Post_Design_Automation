@@ -213,23 +213,6 @@ const HANDLERS = {
   async exec({ tabId, fn, args = [] }) {
     if (!PAGE[fn]) throw new Error('extension mein function nahi: ' + fn + ' (extension reload karo)');
     await keepAwake(tabId);
-    // Bari image payload executeScript mein silent drop ho sakti hai → pehle page pe stage, count verify, phir compose
-    if (fn === 'compose' && Array.isArray(args[1]) && args[1].length) {
-      const [text, files, sel] = args;
-      const bytes = files.reduce((n, f) => n + ((f.b64 || '').length), 0);
-      if (bytes > 60000 || files.length > 2) {
-        await execMain(tabId, () => { window.__pdaAttach = []; }, []);
-        for (const f of files) {
-          if (!f || !f.b64) throw new Error('attach file b64 missing');
-          await execMain(tabId, (meta) => { (window.__pdaAttach = window.__pdaAttach || []).push(meta); },
-            [{ name: f.name, type: f.type, b64: f.b64 }]);
-        }
-        const staged = await execMain(tabId, () => (window.__pdaAttach || []).length, []);
-        if (staged !== files.length)
-          throw new Error(`attach stage fail: page mein ${staged}/${files.length} files`);
-        return execMain(tabId, PAGE.compose, [text, null, sel, true]);
-      }
-    }
     return execMain(tabId, PAGE[fn], args);
   },
   async capture({ tabId }) {
@@ -504,24 +487,21 @@ const PAGE = {
     return [...box.querySelectorAll('button')].map(e => ({ id: e.id, testid: e.getAttribute('data-testid'),
       aria: e.getAttribute('aria-label'), disabled: !!e.disabled, visible: !!e.offsetParent }));
   },
-  compose: async function (text, files, sel, fromStage) {
-    // files lagao + text likho (BHEJO NAHI) — Claude/HEAD attach + staged files support
+  compose: async function (text, files, sel) {
+    // files lagao + text likho (BHEJO NAHI)
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     let comp = document.querySelector(sel.composer);
     if (!comp) throw new Error('ChatGPT ka message box nahi mila');
     let attached = 0;
-    if (fromStage) {
-      files = window.__pdaAttach || [];
-      try { delete window.__pdaAttach; } catch (e) { window.__pdaAttach = []; }
-    }
     if (files && files.length) {
       const dt = new DataTransfer();
       for (const f of files) {
         const bin = atob(f.b64);
         const arr = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        dt.items.add(new File([arr], f.name, { type: f.type || 'image/jpeg' }));
+        dt.items.add(new File([arr], f.name, { type: f.type }));
       }
+      // message box ka hissa (form ya us ke upar ke 6 parents) — sirf yahan ke thumbnails gino
       const boxOf = () => {
         const c = document.querySelector(sel.composer);
         if (!c) return null;
@@ -540,41 +520,35 @@ const PAGE = {
       if (base) throw new Error('Composer mein purani attachments hain — chat dobara kholo');
       const waitThumbs = async ms => {
         const t0 = Date.now();
-        let last = 0, stableAt = Date.now();
-        while (Date.now() - t0 < ms) {
-          const n = thumbs();
-          if (n !== last) { last = n; stableAt = Date.now(); }
-          if (n === files.length && Date.now() - stableAt >= 2000) return true;
-          await sleep(1000);
-        }
-        return thumbs() === files.length;
+        while (Date.now() - t0 < ms) { if (thumbs() >= files.length) return thumbs() === files.length; await sleep(1000); }
+        return false;
       };
-      const uploadWait = Math.min(300000, Math.max(90000, files.length * 20000));
       let ok = false;
+      // 1) file input  2) paste (Ctrl+V jaisa)  3) drag-drop — jab tak thumbnail na dikhe
       const inputs = [...document.querySelectorAll(sel.file_input)];
       const inp = inputs.find(i => /image/.test(i.accept || '') && !/video/.test(i.accept || '')) ||
                   inputs.find(i => !i.accept || /image|\*/.test(i.accept)) || inputs[0];
       if (inp) {
-        try { inp.files = dt.files; }
-        catch (e) { try { Object.defineProperty(inp, 'files', { value: dt.files, configurable: true }); } catch (e2) {} }
+        inp.files = dt.files;
         inp.dispatchEvent(new Event('change', { bubbles: true }));
-        ok = await waitThumbs(uploadWait);
+        ok = await waitThumbs(25000);
       }
       if (!ok && thumbs() === 0) {
         comp = document.querySelector(sel.composer) || comp;
         comp.focus();
         comp.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-        ok = await waitThumbs(Math.min(120000, uploadWait));
+        ok = await waitThumbs(20000);
       }
       if (!ok && thumbs() === 0) {
         const tgt = boxOf() || comp;
         for (const type of ['dragenter', 'dragover', 'drop'])
           tgt.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
-        ok = await waitThumbs(Math.min(120000, uploadWait));
+        ok = await waitThumbs(20000);
       }
       await sleep(3000);
       attached = thumbs();
     }
+    // image lagne ke baad ChatGPT box dobara bana deta hai -> naya box dhoondo
     comp = document.querySelector(sel.composer) || comp;
     comp.focus();
     if (comp.tagName === 'TEXTAREA') {
@@ -590,14 +564,7 @@ const PAGE = {
     }
     await sleep(1000);
     const now = document.querySelector(sel.composer) || comp;
-    return {
-      typed: (now.innerText || now.value || '').trim().length,
-      attached,
-      expected: (files || []).length,
-      got_files: (files || []).length,
-      inputs: [...document.querySelectorAll((sel && sel.file_input) || 'input[type="file"]')].length,
-      method: fromStage ? 'staged' : 'inline'
-    };
+    return { typed: (now.innerText || now.value || '').trim().length, attached, expected: (files || []).length };
   },
   submit: async function (sel) {
     // send button (uploads khatam hone tak enable ka intezar); na mile to Enter

@@ -529,6 +529,19 @@ async def scan(force=False):
             except Exception as e:  # ek company ka masla poora scan na roke
                 why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
                 S.log(f"Gmail: '{item['name']}' scan nahi hua ({why}) — agli company")
+                # Chrome error page / dead frame — Gmail tab dobara khol kar isi company ek dafa retry
+                if re.search(r"error page|Frame with ID|page load timeout", why, re.I):
+                    try:
+                        inbox = base + f"?r={int(time.time())}#inbox"
+                        tab = await S.HUB.call("designer", "gmail_tab", url=inbox, timeout=60)
+                        await S.HUB.call("designer", "goto_quiet", tabId=tab, url=inbox, timeout=90)
+                        await asyncio.sleep(3)
+                        if await _scan_item(tab, item, base, query, data, state, opened_now) == "loggedOut":
+                            STATUS["message"] = "Designer profile mein Gmail login nahi"
+                            return
+                        S.log(f"Gmail: '{item['name']}' error page ke baad retry OK")
+                    except Exception as e2:
+                        S.log(f"Gmail: '{item['name']}' retry bhi fail ({e2})")
         if tab is not None:
             await S.HUB.call("designer", "goto_quiet", tabId=tab, url=base + "#inbox", timeout=60)
         left = [i["name"] for i in data["items"] if not found_today(i)]  # aaj ek bhi nahi mili

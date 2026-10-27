@@ -1047,9 +1047,10 @@ class FindChatTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_memory_hit_needs_no_list(self):
         chat, ex = self._chat([])
-        with patch.dict(server.CHAT_MEMORY, {"waseem": {"belle clinic": {"id": "m1", "title": "Belle Clinic"}}}, clear=True),              patch.object(server.HUB, "exec", new=ex), patch.object(server, "log"),              patch.object(server, "remember_chat"):
+        cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        with patch.dict(server.CHAT_MEMORY, {"waseem": {"belle clinic": {"id": cid, "title": "Belle Clinic"}}}, clear=True),              patch.object(server.HUB, "exec", new=ex), patch.object(server, "log"),              patch.object(server, "remember_chat"):
             found = await chat.find_chat(["Belle Clinic 8", "Belle Clinic"], "Belle Clinic", "doc")
-        self.assertEqual(found, ("m1", "Belle Clinic"))
+        self.assertEqual(found, (cid, "Belle Clinic"))
         chat.all_chats.assert_not_awaited()
         ex.assert_not_awaited()
 
