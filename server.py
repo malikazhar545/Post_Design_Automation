@@ -4211,7 +4211,7 @@ async def auto_resume():
             if HUB.running:  # beech mein START / Gmail ne run shuru kar diya
                 return
             m = re.search(r"/document/d/([^/]+)", doc["url"])
-            if norm(folder_of(doc.get("title", ""))) in HUB.skip or                     (m and load_state().get(m.group(1), {}).get("status") == "done"):
+            if is_skipped(folder_of(doc.get("title", ""))) or                     (m and load_state().get(m.group(1), {}).get("status") == "done"):
                 continue  # skip ki hui / ban chuki file dobara kabhi nahi kholni
             if doc["url"].split("#")[0] not in open_urls:
                 await HUB.call("designer", "open_tab", url=doc["url"], active=False)
@@ -4276,7 +4276,7 @@ async def run_all(only=None, only_post=None):
         cleanup_old_outputs()
         if not only and not only_post:  # bijli jaye to agli dafa khud resume ho sake
             set_run_marker(active=True, paused=False, docs=[{"url": t["url"], "title": t["title"]} for t in tabs
-                                                            if norm(folder_of(t["title"])) not in HUB.skip])
+                                                            if not is_skipped(folder_of(t["title"]))])
         today = datetime.now().strftime("%Y-%m-%d")
         report = []  # aakhir ki summary
         prepared, preparation_errors = {}, {}
@@ -4419,7 +4419,7 @@ async def run_all(only=None, only_post=None):
                 continue
             log(f"[{i}/{total}] {title}  ->  company: {company}  (search: {' | '.join(terms)})")
             folder = folder_of(title)
-            if norm(folder) in HUB.skip:  # dashboard se skip (yaad rehta hai jab tak aap unskip na karein)
+            if is_skipped(folder):  # dashboard se skip / aap ki apni tareekh wali file (hamesha)
                 log(f"[{i}/{total}] SKIP (dashboard se): {title}")
                 report.append({"file": folder, "reels": [], "done": [], "designs": 0, "error": None, "skipped": True})
                 write_file_report(OUT_ROOT / today / folder, report[-1])
@@ -4610,6 +4610,16 @@ async def dashboard_action(do):
     return {"ok": False, "message": f"Unknown action: {do}"}
 
 
+def auto_skipped(folder):
+    """Aap ki apni files (naam sirf tareekh: '28TH OCTOBER 2026') — aap khud banate ho, kholo to bhi hamesha skip.
+    config: auto_skip_title_patterns (regex list)."""
+    return any(re.search(pat, folder or "", re.I) for pat in CFG.get("auto_skip_title_patterns", []))
+
+
+def is_skipped(folder):
+    return norm(folder) in HUB.skip or auto_skipped(folder)
+
+
 SKIP_FILE = OUT_ROOT / "skip.json"  # dashboard skip restart ke baad bhi yaad (date docs / Molen tax har dafa)
 
 
@@ -4681,7 +4691,7 @@ async def http_route(connection, request):
             for t in tabs:
                 m = re.search(r"/document/d/([^/]+)", t["url"])
                 f = folder_of(t["title"])
-                docs.append({"file": f, "skip": norm(f) in HUB.skip,
+                docs.append({"file": f, "skip": is_skipped(f),
                              "done": bool(m) and state.get(m.group(1), {}).get("status") == "done"})
             return http_reply(connection, {"docs": docs, "available": True})
         if path == "/api/references":
@@ -4710,7 +4720,7 @@ async def http_route(connection, request):
 
 def queue_list():
     """Dashboard 'Line mein files': run ki line + Designer mein nayi kholi (abhi line mein nahi) + bari file ka intezar."""
-    out = [{"file": f, "skip": norm(f) in HUB.skip} for f in HUB.queue_view]
+    out = [{"file": f, "skip": is_skipped(f)} for f in HUB.queue_view]
     if not HUB.running:
         return out
     have = {norm(x["file"]) for x in out} | {norm(HUB.current.get("file", ""))}
@@ -4722,7 +4732,7 @@ def queue_list():
         if not m or st == "done" or norm(f) in have:
             continue
         have.add(norm(f))
-        out.append({"file": f, "skip": norm(f) in HUB.skip,
+        out.append({"file": f, "skip": is_skipped(f),
                     "note": HUB.waiting_notes.get(norm(f)) or ("bari file — agla set baad mein" if st == "partial"
                                                                else "nayi — agli baari mein line mein")})
     return out

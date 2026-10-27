@@ -188,6 +188,7 @@
     "SLIDER style: {before_label} photo on the left half, {after_label} photo on the right half, a thin white vertical divider in the middle with a round before/after slider handle (◀ ● ▶) on it; '{before_label}' and '{after_label}' in clean white capitals at the top of each half."
   ],
   "chat_refresh_after_stucks": 2,
+  "auto_skip_title_patterns": ["^\\s*\\d{1,2}(st|nd|rd|th)?\\s+(january|february|march|april|may|june|july|august|september|october|november|december)(\\s+\\d{4})?\\s*$"],
   "refresh_chat_companies": [],
   "split_big_docs": true,
   "company_gap_files": 2,
