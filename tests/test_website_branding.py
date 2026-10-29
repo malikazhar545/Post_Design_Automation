@@ -86,7 +86,10 @@ class WebsiteWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_chat_skips_website_and_connection_error_is_not_missing_chat(self):
         chat = server.Chat("waseem")
         chat.find_chat = AsyncMock(return_value=("existing", "Laima"))
-        with patch.object(server, "get_instructions_from_wajid", new=AsyncMock()) as wajid, \
+        chat.goto = AsyncMock()
+        with patch.object(server, "chat_mode_ok", new=AsyncMock(return_value=True)), \
+             patch.object(server, "chat_refresh_pending", return_value=set()), \
+             patch.object(server, "get_instructions_from_wajid", new=AsyncMock()) as wajid, \
              patch.object(server, "collect_website_branding", new=AsyncMock()) as website, patch.object(server, "log"):
             self.assertEqual(await server.resolve_company_chat(chat, "Laima", ["Laima"], "doc", Path("out")), ("existing", None))
             wajid.assert_not_awaited()

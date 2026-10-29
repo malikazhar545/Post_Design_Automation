@@ -1430,3 +1430,39 @@ class MidFileChatSwitchTests(unittest.IsolatedAsyncioTestCase):
         server.HUB.stuck_events = 0
         refresh.assert_awaited_once()
         self.assertEqual(len(saved), 2)
+
+
+class Oct29RegressionTests(unittest.TestCase):
+    def test_hyphenated_post_word_in_caption_is_not_a_new_post(self):
+        doc = "\n".join(["Post 81", "Heading", "BioRePeel glow", "Caption", "Helps with:",
+                         "✨ Selected superficial post-acne marks", "https://www.magnific.com/premium-photo/x_1.htm",
+                         "Post 82", "Heading", "Body", "Post 83", "Heading", "Profhilo",
+                         "Post 84 ( Story)", "Your journey deserves care."])
+        designs, _, _ = server.parse_doc(doc)
+        self.assertEqual([d["kind"] for d in designs], ["post", "post", "post", "story"])
+        self.assertEqual(server.file_sets(server.expand_outputs(designs))[0][0], None)  # 3 post + story: split nahi
+
+    def test_molen_part_doc_labels_stay_briefs(self):
+        designs, _, _ = server.parse_doc("Post 11/21\nGreen background. Large bold headline: TAX HELP. www.molentax.com footer.")
+        self.assertTrue(designs and designs[0]["brief"])
+        html, text = server.part_html([{"label": "Post 11/21", "lines": ["", "Brief text here"], "bold": [None, None],
+                                        "brief": True}])
+        self.assertTrue(text.startswith("11/21"))
+
+    def test_domain_ending_in_x_is_not_twitter(self):
+        self.assertFalse(server.SOCIAL_RE.search("https://molentax.com/?p=370994"))
+        self.assertTrue(server.SOCIAL_RE.search("https://x.com/someone"))
+
+    def test_skip_of_big_file_covers_its_parts(self):
+        old = server.HUB.skip
+        server.HUB.skip = {"molen tax"}
+        try:
+            self.assertTrue(server.is_skipped("Molen tax.docx - Google Drive (4-6)"))
+            self.assertFalse(server.is_skipped("Belle Clinic London UK 22"))
+        finally:
+            server.HUB.skip = old
+
+    def test_real_photo_brief_without_fallback_needs_client_image(self):
+        self.assertTrue(server.needs_real_photo("Real team photo required: full group. No stock photos."))
+        self.assertFalse(server.needs_real_photo("Real photo of Kenny preferred. Otherwise: white background."))
+        self.assertFalse(server.needs_real_photo("White background. No photos, clean typography."))

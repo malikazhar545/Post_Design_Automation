@@ -529,7 +529,8 @@ async def scan(force=False):
                 why = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
                 S.log(f"Gmail: '{item['name']}' scan nahi hua ({why}) — agli company")
                 # Chrome error page / dead frame — Gmail tab dobara khol kar isi company ek dafa retry
-                if re.search(r"error page|Frame with ID|page load timeout", why, re.I):
+                # "No tab with id" = Gmail tab band ho gayi (doc khulte waqt) -> nayi tab, warna saari companies fail
+                if re.search(r"error page|Frame with ID|page load timeout|No tab with id", why, re.I):
                     try:
                         inbox = base + f"?r={int(time.time())}#inbox"
                         tab = await S.HUB.call("designer", "gmail_tab", url=inbox, timeout=60)
@@ -542,7 +543,10 @@ async def scan(force=False):
                     except Exception as e2:
                         S.log(f"Gmail: '{item['name']}' retry bhi fail ({e2})")
         if tab is not None:
-            await S.HUB.call("designer", "goto_quiet", tabId=tab, url=base + "#inbox", timeout=60)
+            try:
+                await S.HUB.call("designer", "goto_quiet", tabId=tab, url=base + "#inbox", timeout=60)
+            except Exception:
+                pass  # tab band ho chuki — agla scan nayi khol lega
         left = [i["name"] for i in data["items"] if not found_today(i)]  # aaj ek bhi nahi mili
         STATUS["message"] = ((f"{len(opened_now)} file khuli: {', '.join(opened_now)}. " if opened_now else "")
                              + (f"Intezar: {', '.join(left)}" if left else "Aaj list ki saari files mil gayin"))

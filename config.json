@@ -31,6 +31,7 @@
   "instagram_note": "Attached image {n} is a screenshot of an Instagram post. Create this post with the EXACT same content (same text, word for word) and a relevant image, in my {company} branding, 4:5. Do not copy its design, logo or other branding.",
   "instagram_no_photo_note": "",
   "brief_note": "This is the client's design brief / image prompt — follow it exactly. Only write the text that the brief says to put on the design, nothing else.",
+  "site_photo_note": "Uploaded image {n} is from the client's own website page linked under this post \u2014 use it as the main photo / visual source, matched to the brief's content (crop or adapt it to fit the layout). If the brief says typography only, use it only as a subtle background or accent, keeping the headline the focal point.",
   "brief_photo_note": "(If the brief asks for a real photo of a person/team that is not uploaded, use a natural placeholder photo — I will replace it.)",
   "reference_note": "Reference page from the brief (ONLY for the idea/context of the image — do NOT copy this text onto the design):",
   "product_photo_note": "Uploaded file {n} is the PRODUCT photo — show this exact product (same shape, colors, details) in the design.",
@@ -188,6 +189,8 @@
     "SLIDER style: {before_label} photo on the left half, {after_label} photo on the right half, a thin white vertical divider in the middle with a round before/after slider handle (◀ ● ▶) on it; '{before_label}' and '{after_label}' in clean white capitals at the top of each half."
   ],
   "chat_refresh_after_stucks": 2,
+  "no_split_companies": ["molen tax", "molen"],
+  "no_split_rest_minutes": 5,
   "auto_skip_title_patterns": ["^\\s*\\d{1,2}(st|nd|rd|th)?\\s+(january|february|march|april|may|june|july|august|september|october|november|december)(\\s+\\d{4})?\\s*$"],
   "refresh_chat_companies": [],
   "split_big_docs": true,

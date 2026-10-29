@@ -162,6 +162,7 @@ def scan_file(folder, company_fn, state_by_title, current_folder=None, old_reels
         issues.append({"type": "File error", "text": report["error"]})
     todo = [{"type": "Story khud banao", "text": x} for x in report.get("story_skipped") or []]
     todo += [{"type": "Post khud banao (2 dafa nahi bani)", "text": x} for x in report.get("manual_todo") or []]
+    todo += [{"type": "Client se image mango", "text": x} for x in report.get("client_image") or []]
     todo += [{"type": "Reel khud banao", "text": x} for x in reels or []]
     company = company_fn(folder.name)
     return {"file": folder.name, "company": company, "counts": counts, "status": status,

@@ -483,10 +483,10 @@ NOPUB_RE = re.compile(r"\b(do\s*n[o']?t\s*pub\w*|not\s*pub\w*|don'?t\s*post)\b",
 SECTION_RE = re.compile(
     r"^[\W\d_]*?"                                       # bullets / numbering / emoji (📌 Post 2)
     r"(?P<pre>(?:done|✅|✔️?|☑️?)[\s:\-–]*)?"            # "DONE INSTA POST:" (pehle se bani)
-    r"(?P<label>(?:[A-Za-z][A-Za-z0-9 /&+\-]{0,40}?)?\b(?:posts?|story|stories|reels?|carousel|video)\b"
+    r"(?P<label>(?:[A-Za-z][A-Za-z0-9 /&+\-]{0,40}?)?\b(?:posts?|story|stories|reels?|carousel|video)\b(?!-[A-Za-z])"
     r"[A-Za-z0-9 #/&+\-]{0,25}?(?:\s*\([^)]*\))?)"
     r"\s*[*_~]*\s*"                                     # markdown wrappers around label
-    r"(?:[:\-–;]\s*(?P<rest>.*)|$)", re.I)  # "Story; 4 ..." bhi section
+    r"(?:(?:[:–;]|-(?![A-Za-z0-9]))\s*(?P<rest>.*)|$)", re.I)  # "Story; 4 ..." bhi section; "post-acne" nahi
 # Molen jaisa: "10/3Done", "10/11 Do not publish"
 DATE_RE = re.compile(r"^\s*(?P<label>\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*(?P<rest>.{0,40})$")
 HEADING_RE = re.compile(r"^\W*(?:headings?|headlines?|lines?|on[ -]screen(?: reel)? text)\W*?(?:[:;]\s*(?P<rest>.*)|\s*$)", re.I)
@@ -701,7 +701,8 @@ def split_sections(doc):
             cur = {"label": DONE_RE.sub("", label).strip(" ()-#"), "lines": [rest] + label_urls,
                    "bold": [None] * (1 + len(label_urls)),
                    "done": bool(m.group("pre")) or bool(DONE_RE.search(label)) or bool(re.match(r"^\W*done\b", rest, re.I)),
-                   "nopub": bool(NOPUB_RE.search(rest)), "brief": False,
+                   "nopub": bool(NOPUB_RE.search(rest)),
+                   "brief": bool(re.fullmatch(r"posts?\s*#?\s*\d{1,2}/\d{1,2}(?:/\d{2,4})?", DONE_RE.sub("", label).strip(" ()-#"), re.I)),
                    # "Post 1 | Informational carousel" -> "|" ke baad ki qisam (comparison / carousel pehchan)
                    "desc": (re.search(r"\|\s*(.*)$", URL_RE.sub("", line)) or [None, ""])[1].strip()}
             sections.append(cur)
@@ -1011,7 +1012,7 @@ PRODUCT_RE = re.compile(
 
 
 SOCIAL_RE = re.compile(r"(facebook\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|linkedin\.com|twitter\.com|"
-                       r"x\.com/|wa\.me|whatsapp|zeffy\.com|gofundme|calendly|mailto:|tel:)", re.I)
+                       r"(?<![\w-])x\.com/|wa\.me|whatsapp|zeffy\.com|gofundme|calendly|mailto:|tel:)", re.I)
 
 
 async def is_product_page(url):
@@ -1203,6 +1204,47 @@ def _ext_for(ct, url):
     if ext in ("", ".jpe"):
         ext = Path(urlparse(url).path).suffix or ".jpg"
     return ext if len(ext) <= 5 else ".jpg"
+
+
+def needs_real_photo(brief):
+    """'Real photo of Kenny' / 'Real team photo required' -> AI photo nahi chalegi (asal banda / team)."""
+    if re.search(r"\botherwise\b", brief or "", re.I):  # "preferred ... Otherwise: white background ..." -> fallback design
+        return False
+    return bool(re.search(r"\breal\s+(?:team\s+|group\s+)?photo|\bphoto of [A-Z]|\bteam photo", brief or "", re.I))
+
+
+async def site_search_links(brief):
+    """Brief mein link nahi: 'Real photo of Kenny' + 'www.molentax.com' -> site par ?s=Kenny -> us naam wala page."""
+    dom = re.search(r"\bwww\.([\w-]+(?:\.[\w-]+)+)", brief or "", re.I)
+    who = re.search(r"\bphoto of ([A-Z][a-z]+)", brief or "") or re.search(r"\b(team)\s+photo", brief or "", re.I)
+    if not dom or not who:
+        return []
+    site, name = f"https://www.{dom.group(1)}", who.group(1)
+    try:
+        st, ct, body = await asyncio.to_thread(direct_get, f"{site}/?s={name}")
+        html = body.decode("utf-8", "replace") if st == 200 else ""
+    except Exception:
+        return []
+    host = dom.group(1).lower()
+    hits = re.findall(r'href="(https?://(?:www\.)?' + re.escape(host) + r'/[^"#?]*' + re.escape(name.lower()) + r'[^"#?]*)"',
+                      html, re.I)
+    hits = [h for h in hits if not re.search(r"/(search|feed|tag|category|author)/|/feed/?$", h, re.I)]
+    return list(dict.fromkeys(hits))[:2]
+
+
+async def download_source(url, dest_noext):
+    """Pehle se download hui file (bari file ka agla set / dobara START) -> wahi; warna download, fail ho to 1 retry.
+    (WearWood 15: set 2 mein product 1/2 dobara download karte 'Failed to fetch' -> poori file adhoori)"""
+    dest_noext = Path(dest_noext)
+    old = [f for f in dest_noext.parent.glob(dest_noext.name + ".*") if f.stat().st_size > 2000]
+    if old:
+        return old[0]
+    try:
+        return await download_image(url, dest_noext)
+    except Exception as e:
+        log(f"    (download fail: {e} — 5s baad dobara)")
+        await run_sleep(5)
+        return await download_image(url, dest_noext)
 
 
 async def download_image(url, dest_noext):
@@ -2544,7 +2586,9 @@ def build_design_message(company, designs, outputs=None, already=()):
         if d.get("product_path"):
             lines.append(CFG["product_photo_note"].format(n=file_no(d["product_path"], fresh=True)))
             lines.append("Use ONLY the product attached to THIS message. Do not combine it with products from earlier messages or style references.")
-        if d["image_path"]:
+        if d["image_path"] and d.get("site_image"):  # Molen: brief ke link wale website page ki image
+            lines.append(CFG["site_photo_note"].format(n=file_no(d["image_path"])))
+        elif d["image_path"]:
             lines.append(CFG["given_photo_note"].format(n=file_no(d["image_path"])))
             if "_screenshot" in Path(d["image_path"]).stem:  # Envato download nahi hua -> preview ka screenshot
                 lines.append(CFG["screenshot_photo_note"])
@@ -2647,6 +2691,12 @@ def company_items(company, hours=None):
     return sum(e.get("items", 3) for e in data if e.get("company") == norm(company) and e.get("at", "") >= cut)
 
 
+def no_split(company):
+    """Molen tax jaisi file (bohat posts, client ki brief list): sets / nayi docs / din ki had NAHI — poori file ek dafa
+    (ChatGPT ko phir bhi 3-3 posts ke messages). config: no_split_companies"""
+    return any(norm(x) and norm(x) in norm(company or "") for x in CFG.get("no_split_companies", []))
+
+
 def day_items():
     return CFG.get("company_max_posts_per_day", 6)
 
@@ -2664,6 +2714,11 @@ def log_company_unit(company, doc_id, title, part=None, items=3):
                  "at": datetime.now().isoformat()})
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     COMPANY_LOG.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+def is_story_unit(unit):
+    o = unit[0]
+    return o["type"] == "story" or o["d"].get("kind") == "story"
 
 
 def file_sets(outs, per=None):
@@ -2688,11 +2743,11 @@ def file_sets(outs, per=None):
         seen_d.add(id(d))
         if not items:
             items += [("reel", j) for j in range(d.get("reels_before", 0))]
-        if units[k][0]["type"] != "story":
+        if not is_story_unit(units[k]):
             items.append(k)
         items += [("reel", k, j) for j in range(d.get("reels_after", 0))]
     for k in order:  # same design ke doosre unit (product post + uske mockups) usi post ke saath
-        if units[k][0]["type"] != "story" and k not in items:
+        if not is_story_unit(units[k]) and k not in items:
             items.insert(items.index(next(x for x in order if units[x][-1]["d"] is units[k][-1]["d"])) + 1, k)
     posts = items
     if len(posts) <= per:
@@ -2742,6 +2797,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     # 3 se zyada posts (Dental 10 posts): ek dafa mein sirf ek set (1-3 + story), phir 2 aur companies,
     # phir agla set (4-6) — ChatGPT ek chat mein lagataar atak jata hai
     sets = file_sets(outs) if not summary.get("only_post") else [(None, outs, 0)]
+    if no_split(company):  # Molen: poori file isi dafa (3-3 posts ke messages)
+        sets = [(None, outs, sum(x[2] for x in sets))]
     if PART_RE.search(summary.get("file", "")):  # bari file ka hissa (nayi doc "... (7-10)") = poori ek file
         sets = [(None, outs, sum(x[2] for x in sets))]
     need = sets[0][2]
@@ -2757,7 +2814,7 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
     if doc_items_logged(summary.get("doc_id")) >= sum(x[2] for x in sets):
         summary["redo"] = True
     used = company_items(company) if not summary.get("only_post") and not summary.get("redo") else 0
-    if used and used + need > day_items():  # company ki aaj ki 6 posts (reel samait) puri -> agle din
+    if used and used + need > day_items() and not no_split(company):  # company ki aaj ki 6 posts (reel samait) puri -> agle din
         raise DayLimit(company, need)
 
     async def send_with_limit_retry(message, files):
@@ -2790,6 +2847,8 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
         # (jaldi jaldi requests -> ChatGPT 'Try again' / garbar)
         if sent_once and (big_file or carousel or single):
             mins = CFG.get("rest_between_sets_minutes", 3) if big_file else CFG.get("rest_before_carousel_minutes", 1)
+            if no_split(company):  # Molen: poori file ek dafa, 3-3 posts ke messages, har set ke baad 5 min
+                mins = max(mins, CFG.get("no_split_rest_minutes", 5))
             await chatgpt_rest(mins, "bari file — agla set hard refresh ke baad" if big_file
                                else "carousel se pehle, phir hard refresh" if carousel
                                else "agle message se pehle, phir hard refresh")
@@ -3548,6 +3607,8 @@ def part_html(sections):
     rows = []
     for s in sections:
         label = s["label"] + (f" | {s['desc']}" if s.get("desc") else "")
+        if s.get("brief"):  # Molen: "11/21" (date) hi rahe -> parser brief samjhe
+            label = re.sub(r"^posts?\s*", "", label, flags=re.I)
         rows.append(f"<p><b>{_html.escape(label)}</b></p>")
         for line, bold in zip(s["lines"], s["bold"]):
             if not line:
@@ -3804,6 +3865,10 @@ def split_instagram_carousels(designs):
     return out
 
 
+class EmptyDoc(RuntimeError):
+    pass
+
+
 async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared_doc=None):
     # Designer busy = Gmail scan ruke (tab aage aa kar download/screenshot bigaar sakti hai).
     # ChatGPT (Waseem) wait / generate ke dauran Designer free -> Gmail nayi files line mein khol sakta hai.
@@ -3814,6 +3879,8 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
         HUB.designer_busy = False
     out_dir.mkdir(parents=True, exist_ok=True)
     designs, reels, done_posts = parse_doc(doc)
+    if not any(l.strip().strip("﻿") for l, _ in doc):  # khaali doc (Molen ki duplicate khaali docs) -> ChatGPT/retry bekaar
+        raise EmptyDoc("Doc bilkul KHAALI hai — yeh tab band kar do (shayad duplicate / galti se bani doc)")
     if not designs and not reels and not done_posts:
         log("  Format samajh nahi aaya — ChatGPT (Wajid temporary chat) se doc parhwa raha hoon")
         try:
@@ -3857,7 +3924,8 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
         designs[0]["reels_before"] = len(reels) - sum(d.get("reels_after", 0) for d in designs)
     # 3 se zyada posts -> Designer mein nayi Google Docs (1-3, 4-6, 7-10) — har hissa alag file ban kar banega
     # asal file khud pehla set (1-3) banti hai; sirf AGLE sets (4-6, 7-10) nayi docs mein (khaali/Untitled doc kabhi nahi)
-    if CFG.get("split_big_docs", True) and not summary.get("only_post") and not PART_RE.search(summary.get("file", "")):
+    if (CFG.get("split_big_docs", True) and not summary.get("only_post") and not PART_RE.search(summary.get("file", ""))
+            and not no_split(company)):
         sets = file_sets(expand_outputs(designs))
         if len(sets) > 1:
             splits = load_splits()
@@ -3907,7 +3975,7 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
         for n, d in enumerate(designs, 1):
             if d["image_url"]:
                 try:
-                    d["image_path"] = await download_image(d["image_url"], img_dir / f"image{n}")
+                    d["image_path"] = await download_source(d["image_url"], img_dir / f"image{n}")
                     log(f"  Image {n} download: {d['image_path'].name}")
                 except Exception as e:
                     # file mein image di hai to wahi zaroori -> bina image ke post nahi banegi
@@ -3916,7 +3984,7 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
                     d["skip"] = True
             if d.get("after_url") and not d.get("skip"):  # comparison: AFTER photo bhi zaroori
                 try:
-                    d["after_path"] = await download_image(d["after_url"], img_dir / f"image{n}_after")
+                    d["after_path"] = await download_source(d["after_url"], img_dir / f"image{n}_after")
                     log(f"  Image {n} (after) download: {d['after_path'].name}")
                 except Exception as e:
                     log(f"  Image {n} (after) download FAIL ({e}) — yeh post skip (dono images zaroori)")
@@ -3930,7 +3998,7 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
                         break
             if d.get("product_url"):
                 try:
-                    d["product_path"] = await download_image(d["product_url"], img_dir / f"product{n}")
+                    d["product_path"] = await download_source(d["product_url"], img_dir / f"product{n}")
                     mock = is_mockup_company(company)
                     log(f"  Product {n} ki image download: {d['product_path'].name}"
                         + (" (2 mockups banenge)" if mock else " (sirf 1 design, mockups nahi)"))
@@ -3946,6 +4014,25 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
                         break
                 except Exception as e:
                     log(f"  Design {n}: reference link nahi khula ({e})")
+            if d.get("brief") and not d.get("image_path") and not d.get("skip"):
+                links = [x for x in d.get("ref_links") or [] if not SOCIAL_RE.search(x)][:2]
+                if not links:
+                    links = await site_search_links(d["content"])
+                for u in links:
+                    try:
+                        d["image_path"] = await download_source(u, img_dir / f"site{n}")
+                        d["site_image"] = True
+                        log(f"  Design {n}: website se image li ({d['image_path'].name}) <- {u[:70]}")
+                        break
+                    except Exception as e:
+                        log(f"  Design {n}: website image nahi mili ({e})")
+                if not d.get("image_path") and needs_real_photo(d["content"]):
+                    # asal photo (team / banda) chahiye aur website par nahi -> post skip, dashboard: client se image mango
+                    d["skip"] = True
+                    tag = re.sub(r"^post\s*", "", d["label"], flags=re.I)
+                    summary.setdefault("client_image", []).append(
+                        f"{tag}: asal photo chahiye, website par nahi mili — client se image mango")
+                    log(f"  Design {n} ({tag}): asal photo website par nahi — SKIP (client se image mango)")
             if d["ig_url"]:
                 try:
                     if d["ig_url"] not in ig_cache:  # carousel ki saari slides ek hi Instagram post -> ek dafa
@@ -4031,7 +4118,7 @@ def write_file_report(out_dir, summary):
         status = "skipped"
     data = {k: summary.get(k) for k in ("file", "designs", "made", "error", "image_fail", "qa_fail", "dropped",
                                          "story_skipped", "reels", "done", "final_dir", "format_check",
-                                         "qa_unverified", "manual_reason", "manual_todo")}
+                                         "qa_unverified", "manual_reason", "manual_todo", "client_image")}
     data.update(status=status, finished=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -4079,7 +4166,7 @@ def write_report(report, day_dir):
             if r.get("manual_reason"):
                 lines.append(f"     ! BRANDING        {r['manual_reason']}")
             lines.append("")
-    extra = [r for r in report if r.get("story_skipped") or r.get("manual_todo") or r["reels"] or r.get("format_check")
+    extra = [r for r in report if r.get("story_skipped") or r.get("manual_todo") or r.get("client_image") or r["reels"] or r.get("format_check")
              or r.get("qa_unverified") or r["done"]]
     if extra:
         lines += ["-" * 70, "AAP KHUD BANAO / DEKH LO", "-" * 70]
@@ -4087,6 +4174,7 @@ def write_report(report, day_dir):
             lines.append(f"> {r['file']}")
             lines += [f"     STORY (khud banao)   {x}" for x in r.get("story_skipped", [])]
             lines += [f"     POST (khud banao)    {x}" for x in r.get("manual_todo", [])]
+            lines += [f"     CLIENT SE IMAGE MANGO  {x}" for x in r.get("client_image") or []]
             lines += [f"     REEL (khud banao)    {x}" for x in r["reels"]]
             lines += [f"     HEADING CHECK KARO   {x}" for x in r.get("format_check", [])]
             lines += [f"     IMAGE KHUD DEKH LO   {x}  (QA confirm nahi hua)" for x in r.get("qa_unverified", [])]
@@ -4499,6 +4587,12 @@ async def run_all(only=None, only_post=None):
                     continue
                 if isinstance(e, WebsiteBrandingUnavailable):
                     summary["manual_reason"] = str(e)
+                if isinstance(e, EmptyDoc):  # khaali doc -> tab band (bani hui files ki tabs khuli rehti hain)
+                    try:
+                        await HUB.call("designer", "close_tab", tabId=tab["tabId"])
+                        e = EmptyDoc("Doc bilkul KHAALI thi — tab band kar di")
+                    except Exception:
+                        pass
                 err_text = str(e) or f"{type(e).__name__} (timeout / koi jawab nahi)"
                 log(f"  ERROR: {err_text}")
                 traceback.print_exc()
@@ -4508,7 +4602,7 @@ async def run_all(only=None, only_post=None):
                     state[doc_id] = {"status": "error", "title": title, "error": err_text}
                 # koi image nahi bani -> baqi SAARI companies ke baad isi run mein EK dafa dobara
                 # (ban chuki images yaad hain — sirf baqi banengi)
-                if not summary.get("made") and doc_id not in retry_later and not only_post                         and not isinstance(e, (WebsiteBrandingUnavailable, ChatLimit)):
+                if not summary.get("made") and doc_id not in retry_later and not only_post                         and not isinstance(e, (WebsiteBrandingUnavailable, ChatLimit, EmptyDoc)):
                     retry_later.add(doc_id)
                     queue.append(tab)
                     report.remove(summary)
@@ -4616,8 +4710,15 @@ def auto_skipped(folder):
     return any(re.search(pat, folder or "", re.I) for pat in CFG.get("auto_skip_title_patterns", []))
 
 
+def skip_base(folder):
+    """'Molen tax.docx - Google Drive (4-6)' -> 'molen tax' (skip asal file ki ho to us ke hisse bhi skip)."""
+    f = PART_RE.sub("", folder or "")
+    f = re.sub(r"\s*-\s*Google (Drive|Docs)\s*$", "", f, flags=re.I)
+    return norm(re.sub(r"\.(docx?|pdf)$", "", f.strip(), flags=re.I))
+
+
 def is_skipped(folder):
-    return norm(folder) in HUB.skip or auto_skipped(folder)
+    return norm(folder) in HUB.skip or skip_base(folder) in HUB.skip or auto_skipped(folder)
 
 
 SKIP_FILE = OUT_ROOT / "skip.json"  # dashboard skip restart ke baad bhi yaad (date docs / Molen tax har dafa)
