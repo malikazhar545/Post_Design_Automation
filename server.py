@@ -1280,7 +1280,7 @@ async def download_image(url, dest_noext):
         from urllib.parse import unquote
         url = unquote(m.group(1))
     r = await HUB.call("designer", "fetch", url=url)
-    if r["status"] == 200 and r["contentType"].startswith("image/"):
+    if r["status"] == 200 and sniff_image(r):
         return _save(r, url, dest_noext)
     # page link (Pinterest / product / koi bhi page) -> page ki asal image
     candidates = []
@@ -1298,11 +1298,16 @@ async def download_image(url, dest_noext):
         try:
             await run_sleep(4)
             candidates = [c for c in await HUB.exec("designer", tab, "main_images") or [] if c]
+        except Exception as e:
+            log(f"    (page tab se image nahi mili: {e})")
         finally:
-            await HUB.call("designer", "close_tab", tabId=tab)
+            try:
+                await HUB.call("designer", "close_tab", tabId=tab)
+            except Exception:
+                pass  # tab khud band ho chuki (link seedha download tha)
     for img in candidates:
         r = await HUB.call("designer", "fetch", url=img)
-        if r["status"] == 200 and r["contentType"].startswith("image/") and len(r["b64"]) > 8000:
+        if r["status"] == 200 and sniff_image(r) and len(r["b64"]) > 8000:
             return _save(r, img, dest_noext)
         try:  # extension se na aaye to server seedha
             st, ct, body = await asyncio.to_thread(direct_get, img)
@@ -1361,7 +1366,35 @@ async def fetch_reference_text(url, limit=900):
     return text[:limit].strip() or None
 
 
+IMAGE_MAGIC = {b"\xff\xd8\xff": "image/jpeg", b"\x89PNG": "image/png", b"GIF8": "image/gif", b"RIFF": "image/webp"}
+
+
+def sniff_image(r):
+    """Drive ab image 'application/octet-stream' bhejta hai (Bandz 5) -> bytes se pehchano. Image ho to type theek."""
+    ct = (r.get("contentType") or "").lower()
+    if ct.startswith("image/"):
+        return True
+    if r.get("status") != 200 or "html" in ct or not r.get("b64"):
+        return False
+    head = base64.b64decode(r["b64"][:64])
+    if head[4:8] == b"ftyp" and head[8:12] in (b"heic", b"heix", b"mif1", b"msf1", b"heim", b"heis", b"avif"):
+        r["contentType"] = "image/heic"  # iPhone photo (Bandz 5) -> _save JPG bana deta hai
+        return True
+    for magic, kind in IMAGE_MAGIC.items():
+        if head.startswith(magic) and (kind != "image/webp" or head[8:12] == b"WEBP"):
+            r["contentType"] = kind
+            return True
+    return False
+
+
 def _save(r, url, dest_noext):
+    if r.get("contentType") in ("image/heic", "image/heif", "image/avif"):  # ChatGPT HEIC nahi leta -> JPG
+        from PIL import Image
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+        path = Path(str(dest_noext) + ".jpg")
+        Image.open(io.BytesIO(base64.b64decode(r["b64"]))).convert("RGB").save(path, "JPEG", quality=92)
+        return path
     path = Path(str(dest_noext) + _ext_for(r["contentType"], url))
     path.write_bytes(base64.b64decode(r["b64"]))
     return path
