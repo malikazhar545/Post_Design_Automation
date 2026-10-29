@@ -2583,6 +2583,9 @@ def build_design_message(company, designs, outputs=None, already=()):
             lines.append(CFG["instagram_note"].format(n=n, company=company))
         if d.get("text_from_image") and d.get("image_path") and not d["content"]:
             lines.append(CFG["text_from_image_note"].format(n=file_no(d["image_path"])))
+        if d.get("character"):  # company ka mascot (Molen: Scout) -> wahi character, AI ka naya nahi
+            ch = d["character"]
+            lines.append(CFG["character_note"].format(n=file_no(ch["file"], fresh=True), name=ch["name"]))
         if d.get("product_path"):
             lines.append(CFG["product_photo_note"].format(n=file_no(d["product_path"], fresh=True)))
             lines.append("Use ONLY the product attached to THIS message. Do not combine it with products from earlier messages or style references.")
@@ -2689,6 +2692,21 @@ def company_items(company, hours=None):
         return 0
     cut = (datetime.now() - _timedelta(hours=hours or CFG.get("limit_window_hours", 12))).isoformat()
     return sum(e.get("items", 3) for e in data if e.get("company") == norm(company) and e.get("at", "") >= cut)
+
+
+def company_characters(company, text):
+    """config character_refs: {"molen": [{"name": "Scout", "file": "D:/Molen Scout/scout.png"}]} ->
+    post ke text mein naam aaye to us character ki image (file na mile to log, post phir bhi banti hai)."""
+    out = []
+    for key, chars in (CFG.get("character_refs") or {}).items():
+        if norm(key) and norm(key) in norm(company or ""):
+            for ch in chars:
+                if re.search(r"\b" + re.escape(ch["name"]) + r"\b", text or "", re.I):
+                    if Path(ch["file"]).exists():
+                        out.append(dict(ch, file=Path(ch["file"])))
+                    else:
+                        log(f"  ⚠ {ch['name']} ki image nahi mili: {ch['file']}")
+    return out
 
 
 def no_split(company):
@@ -4014,6 +4032,10 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
                         break
                 except Exception as e:
                     log(f"  Design {n}: reference link nahi khula ({e})")
+            chars = company_characters(company, d["content"])
+            if chars:
+                d["character"] = chars[0]
+                log(f"  Design {n}: {chars[0]['name']} ki asal image saath jayegi ({chars[0]['file'].name})")
             if d.get("brief") and not d.get("image_path") and not d.get("skip"):
                 links = [x for x in d.get("ref_links") or [] if not SOCIAL_RE.search(x)][:2]
                 if not links:

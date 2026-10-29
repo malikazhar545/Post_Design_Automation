@@ -119,7 +119,7 @@ async function newAutoTab(url) {
     t = await chrome.tabs.create({ url, windowId: g.windowId, active: true });
     await chrome.tabs.group({ tabIds: [t.id], groupId: g.id });
   } else {
-    const w = await chrome.windows.create({ url, focused: false, state: 'normal' });
+    const w = await chrome.windows.create({ url, focused: false, state: 'minimized' });
     t = w.tabs[0];
     const gid = await chrome.tabs.group({ tabIds: [t.id], createProperties: { windowId: w.id } });
     await chrome.tabGroups.update(gid, { title: GROUP_TITLE, color: 'green' });
@@ -134,11 +134,7 @@ async function keepAwake(tabId) {
   if (t.autoDiscardable) await chrome.tabs.update(tabId, { autoDiscardable: false });
   if (t.discarded) { await chrome.tabs.reload(tabId); await waitComplete(tabId); t = await chrome.tabs.get(tabId); }
   if (!t.active && await inAutoGroup(t)) await chrome.tabs.update(tabId, { active: true });
-  // minimize window mein Chrome page ke timers ~1 min tak dheeme kar deta hai (nayi chat 5 min time-out) -> normal
-  try {
-    const w = await chrome.windows.get(t.windowId);
-    if (w.state === 'minimized') await chrome.windows.update(t.windowId, { state: 'normal', focused: false });
-  } catch (e) {}
+  // window minimize hi rehti hai (aap ki screen na khule) — Chrome flags (AUTO_START.bat) se timers dheeme nahi hote
 }
 
 function toB64(buf) {
@@ -225,9 +221,14 @@ const HANDLERS = {
     const t = await chrome.tabs.get(tabId);
     await chrome.tabs.update(tabId, { active: true });  // script ki window mein (aap ki window nahi)
     const w = await chrome.windows.get(t.windowId);
-    if (w.state === 'minimized') await chrome.windows.update(t.windowId, { state: 'normal' });
+    // screenshot sirf nazar aati window ka banta hai -> pal bhar kholo, phir wapas minimize
+    if (w.state === 'minimized') await chrome.windows.update(t.windowId, { state: 'normal', focused: false });
     await sleep(500);
-    return chrome.tabs.captureVisibleTab(t.windowId, { format: 'png' });
+    try {
+      return await chrome.tabs.captureVisibleTab(t.windowId, { format: 'png' });
+    } finally {
+      if (w.state === 'minimized') await chrome.windows.update(t.windowId, { state: 'minimized' }).catch(() => {});
+    }
   },
   now() { return new Date().toISOString(); },
   async save_image({ tabId, timeout = 60000 }) {

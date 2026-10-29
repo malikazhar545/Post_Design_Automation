@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Post Automation - __NAME__",
-  "version": "6.2",
+  "version": "6.3",
   "description": "Post design automation helper (__NAME__ profile)",
   "permissions": [
     "tabs",

@@ -189,6 +189,8 @@
     "SLIDER style: {before_label} photo on the left half, {after_label} photo on the right half, a thin white vertical divider in the middle with a round before/after slider handle (◀ ● ▶) on it; '{before_label}' and '{after_label}' in clean white capitals at the top of each half."
   ],
   "chat_refresh_after_stucks": 2,
+  "character_refs": {"molen": [{"name": "Scout", "file": "D:/Molen Scout/scout.png"}]},
+  "character_note": "Uploaded image {n} is {name}, the company's own mascot character. Use EXACTLY this {name} \u2014 same species, face, eyes, fur colour, body shape, navy company polo with the logo and overall art style. Only change his pose, props, costume additions and expression as the brief says. Never invent a different-looking character.",
   "no_split_companies": ["molen tax", "molen"],
   "no_split_rest_minutes": 5,
   "auto_skip_title_patterns": ["^\\s*\\d{1,2}(st|nd|rd|th)?\\s+(january|february|march|april|may|june|july|august|september|october|november|december)(\\s+\\d{4})?\\s*$"],
