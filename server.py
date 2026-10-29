@@ -1232,6 +1232,19 @@ async def site_search_links(brief):
     return list(dict.fromkeys(hits))[:2]
 
 
+async def page_alive(url):
+    """Website page sach mein khulta hai? 404 / 'page not found' -> False (us ki tasveer bhi '404' hoti hai)."""
+    try:
+        st, ct, body = await asyncio.to_thread(direct_get, url)
+    except Exception:
+        return False
+    if st != 200:
+        return False
+    head = body[:60000].decode("utf-8", "replace")
+    title = (re.search(r"<title[^>]*>(.*?)</title>", head, re.I | re.S) or [None, ""])[1]
+    return not re.search(r"\b404\b|not found|page (?:can.?t|could ?n.?t) be found|nothing (?:was )?found", title, re.I)
+
+
 async def download_source(url, dest_noext):
     """Pehle se download hui file (bari file ka agla set / dobara START) -> wahi; warna download, fail ho to 1 retry.
     (WearWood 15: set 2 mein product 1/2 dobara download karte 'Failed to fetch' -> poori file adhoori)"""
@@ -4041,6 +4054,9 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
                 if not links:
                     links = await site_search_links(d["content"])
                 for u in links:
+                    if not await page_alive(u):  # draft / 404 page ki "404" tasveer kabhi nahi (Molen 11/2)
+                        log(f"  Design {n}: website page abhi live nahi (404/draft) — sirf brief se banegi")
+                        continue
                     try:
                         d["image_path"] = await download_source(u, img_dir / f"site{n}")
                         d["site_image"] = True
