@@ -680,7 +680,7 @@ def split_sections(doc):
             cur["label"] += f" ({m.group('label').strip()})"
             continue
         if m and cur is not None and re.fullmatch(
-                r"(?:(?:\d+\s*[- ]?\s*)?sec(?:ond)?s?\s+)?reels?\s*(?:cover|title|hook|text|script)?",
+                r"(?:hook\s*[/&|+]\s*)?(?:(?:\d+\s*[- ]?\s*)?sec(?:ond)?s?\s+)?reels?\s*(?:cover|title|hook|text|script)?",
                 m.group("label").strip(), re.I) and not (m.group("rest") or "").strip():
             # "POST 17 | REEL" ke neeche "**REEL COVER**" (lines pehle se hain) -> nayi section nahi
             if "(reel)" not in cur["label"].lower():
