@@ -2698,14 +2698,43 @@ def who(o):
     return f"{label} «{head[:45]}{'…' if len(head) > 45 else ''}»" if head else label
 
 
+def image_dhash(path, n=8):
+    """Tasveer ka 'shakal' hash (64 bit): thoda sa alag version bhi wahi hash ke qareeb."""
+    from PIL import Image
+    im = Image.open(path).convert("L").resize((n + 1, n), Image.LANCZOS)
+    px = im.load()
+    bits = 0
+    for r in range(n):
+        for c in range(n):
+            bits = bits << 1 | (px[c, r] > px[c + 1, r])
+    return bits
+
+
 def drop_duplicate(o, outs):
-    """Is file ki kisi doosri image jaisi hoobahoo (same bytes) -> yeh post bani hi nahi: file hatao, False/True."""
+    """Is file ki kisi doosri image jaisi (hoobahoo bytes YA lagbhag wahi design) -> yeh post bani hi nahi:
+    file hatao, True. Molen set 3: ChatGPT ne '30 DAYS' ke 3 version diye (Scout / TAX HELP ki jagah);
+    Pro Channel French 4: Post 1 aur 2 ek hi design. Naap: asal copies 5-7 bit, alag posts 10+."""
     import hashlib
     digest = lambda p: hashlib.md5(Path(p).read_bytes()).hexdigest()
     mine = digest(o["file"])
+    try:
+        my_shape = (image_dhash(o["file"], 8), image_dhash(o["file"], 16))
+    except Exception:
+        my_shape = None
+    # dono naap: 8x8 <= 7 AUR 16x16 <= 64 (Molen copies 6/45, 7/56, 5/45; alag typography post 6/108)
+    limit8, limit16 = CFG.get("near_duplicate_bits", 7), CFG.get("near_duplicate_bits_fine", 64)
     for other in outs:
-        if other is not o and other.get("file") and Path(other["file"]) != Path(o["file"]) \
-                and Path(other["file"]).exists() and digest(other["file"]) == mine:
+        if other is o or not other.get("file") or Path(other["file"]) == Path(o["file"]) \
+                or not Path(other["file"]).exists():
+            continue
+        same = digest(other["file"]) == mine
+        if not same and my_shape is not None:
+            try:
+                same = (bin(my_shape[0] ^ image_dhash(other["file"], 8)).count("1") <= limit8
+                        and bin(my_shape[1] ^ image_dhash(other["file"], 16)).count("1") <= limit16)
+            except Exception:
+                pass
+        if same:
             log(f"  ✘ {o['name']}: yeh {other['name']} wali image hi hai (ChatGPT ne dobara di) — nahi gini")
             HUB.stuck_events += 1
             try:

@@ -1466,3 +1466,30 @@ class Oct29RegressionTests(unittest.TestCase):
         self.assertTrue(server.needs_real_photo("Real team photo required: full group. No stock photos."))
         self.assertFalse(server.needs_real_photo("Real photo of Kenny preferred. Otherwise: white background."))
         self.assertFalse(server.needs_real_photo("White background. No photos, clean typography."))
+
+
+class NearDuplicateTests(unittest.TestCase):
+    def test_slightly_different_copy_is_dropped_but_other_post_kept(self):
+        from PIL import Image, ImageDraw
+        tmp = Path("tests/_runs") / f"dup_{uuid4().hex[:6]}"
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            def make(name, text, shift=0):
+                im = Image.new("RGB", (400, 500), "white")
+                d = ImageDraw.Draw(im)
+                d.rectangle([60 + shift, 80, 340 + shift, 260], fill=(40, 140, 60))
+                d.text((90, 320), text, fill="black")
+                p = tmp / name
+                im.save(p)
+                return {"name": name, "file": p}
+            first = make("a.png", "30 DAYS")
+            copy = make("b.png", "30 DAYS", shift=2)
+            other = Image.new("RGB", (400, 500), "white")
+            ImageDraw.Draw(other).ellipse([50, 300, 350, 480], fill=(20, 20, 90))
+            other.save(tmp / "c.png")
+            other_o = {"name": "c.png", "file": tmp / "c.png"}
+            with patch.object(server, "log"):
+                self.assertTrue(server.drop_duplicate(copy, [first]))
+                self.assertFalse(server.drop_duplicate(other_o, [first]))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
