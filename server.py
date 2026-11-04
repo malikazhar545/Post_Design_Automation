@@ -486,12 +486,14 @@ SECTION_RE = re.compile(
     r"(?P<label>(?:[A-Za-z][A-Za-z0-9 /&+\-]{0,40}?)?\b(?:posts?|story|stories|reels?|carousel|video)\b(?!-[A-Za-z])"
     r"[A-Za-z0-9 #/&+\-]{0,25}?(?:\s*\([^)]*\))?)"
     r"\s*[*_~]*\s*"                                     # markdown wrappers around label
-    r"(?:(?:[:–;]|-(?![A-Za-z0-9]))\s*(?P<rest>.*)|$)", re.I)  # "Story; 4 ..." bhi section; "post-acne" nahi
+    r"(?:(?:[:–—;]|-(?![A-Za-z0-9]))\s*(?P<rest>.*)|$)", re.I)  # "Story; 4 ...", "Post 4 — Title" bhi section; "post-acne" nahi
 # Molen jaisa: "10/3Done", "10/11 Do not publish"
 DATE_RE = re.compile(r"^\s*(?P<label>\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s*(?P<rest>.{0,40})$")
 HEADING_RE = re.compile(r"^\W*(?:headings?|headlines?|lines?|on[ -]screen(?: reel)? text)\W*?(?:[:;]\s*(?P<rest>.*)|\s*$)", re.I)
 CAPTION_RE = re.compile(r"^\W*caption\W*?(?::\s*(?P<rest>.*)|\s*$)", re.I)   # "CAPTION: x" / "**Caption **"
 URL_RE = re.compile(r"https?://\S+")
+DOC_IMAGE_HOST = "doc-image.invalid"  # doc ke andar lagi image (Single Parent, Clear Health) -> Output/doc_images/ mein file
+DOC_IMAGE_RE = re.compile(r"https?://" + re.escape(DOC_IMAGE_HOST) + r"/\S+")
 IG_POST_RE = re.compile(r"instagram\.com/(?:[\w.]+/)?(?:p|tv)/", re.I)
 # reel aksar link se pehchani jati hai: Instagram reel, Freepik video, stock video, Shorts/TikTok
 VIDEO_LINK_RE = re.compile(
@@ -544,7 +546,7 @@ def prepare_doc_format(doc):
             starts.append(i)
     if starts:
         spans = []
-        if starts[0] and any(URL_RE.search(x) for x in cleaned[:starts[0]]):
+        if starts[0] and any(URL_RE.search(x) and not DOC_IMAGE_RE.search(x) for x in cleaned[:starts[0]]):
             spans.append((0, starts[0], False))
         spans.extend((start, starts[n + 1] if n + 1 < len(starts) else len(rows), True)
                      for n, start in enumerate(starts))
@@ -721,7 +723,15 @@ def split_sections(doc):
     if sections:
         # Eliquid jaisa: pehli post par "Post 1" likha hi nahi -> label se upar text + link ho to woh bhi post
         pre = [(l, b) for l, b in pre if not SECTION_RE.match(l)]
-        if pre and any(URL_RE.search(l) for l, _ in pre):
+        urls_above = [l for l, _ in pre if URL_RE.search(l)]
+        if urls_above and all(DOC_IMAGE_RE.search(l) for l in urls_above):
+            # label se upar doc mein lagi image (Single Parent) -> pehli post ki image, neeche ki line writer ki hidayat
+            sections[0]["lines"][1:1] = urls_above
+            sections[0]["bold"][1:1] = [False] * len(urls_above)
+            note = " ".join(l for l, _ in pre if not URL_RE.search(l) and len(l.split()) >= 4)
+            if note:
+                sections[0]["image_note"] = note
+        elif pre and any(URL_RE.search(l) for l, _ in pre):
             sections.insert(0, {"label": "Post 1", "lines": [""] + [l for l, _ in pre], "bold": [None] + [b for _, b in pre],
                                 "done": False, "nopub": False, "brief": False})
         return sections
@@ -756,6 +766,43 @@ def split_sections(doc):
     return sections
 
 
+STORY_HINT_RE = re.compile(r"^\W*(?:(?:format|type|size)\W+(?:\w+\s+){0,2}stor(?:y|ies)\b|"
+                           r"(?:(?:instagram|insta|ig|fb|facebook)\s+)?stor(?:y|ies)\W*$)|\b9\s*[:x/]\s*16\b", re.I)
+
+
+def REEL_TEXT_RE_ANY(s):
+    return bool(re.search(r"REEL|VIDEO", s["label"], re.I)) or any(REEL_TEXT_RE.match(l) for l in s["lines"])
+
+
+def section_is_story(s):
+    """Writer story ko 'Post 4' likh deti hai: 'Post 4 | Story', neeche 'Format: Story' ya '9:16' -> story hi hai."""
+    if "STOR" in s["label"].upper() or re.search(r"\bstor(?:y|ies)\b", s.get("desc") or "", re.I):
+        return True
+    return any(STORY_HINT_RE.search(l) for l in [x for x in s["lines"] if x][:4])
+
+
+def section_has_caption(s):
+    """Asal caption: lamba para, hashtags, ya 'Caption' ke neeche likhat. (Story mein sirf image + chhota text hota hai.)"""
+    lines = [l for l in s["lines"][1:] if l and not (URL_RE.search(l) and len(l.split()) <= 3)]
+    if any(is_long(l) or re.search(r"(?:^|\s)#[A-Za-z]\w+", l) for l in lines):
+        return True
+    i = next((n for n, l in enumerate(lines) if len(l) < 40 and re.search(r"\bcaption\b", l, re.I)), None)
+    return i is not None and len(" ".join(lines[i:])) >= 60
+
+
+def captionless_stories(sections):
+    """Story ka caption nahi hota: baqi posts ke caption hain aur 'Post 4' par sirf image + text -> woh story.
+    Jis doc mein kisi post ka caption nahi (Eliquid, Molen briefs) wahan yeh rule nahi lagta."""
+    def plain(x):
+        return not x.get("brief") and not x["done"] and not x["nopub"] and not REEL_TEXT_RE_ANY(x)
+    posts = [x for x in sections if plain(x) and not section_is_story(x)]
+    bare = [x for x in posts if not section_has_caption(x)]
+    with_caption = len(posts) - len(bare)
+    if len(bare) != 1 or with_caption < 2:  # sirf ek hi be-caption, baqi sab ke caption -> warna writer ka style hai
+        return []
+    return bare
+
+
 def parse_doc(doc):
     """RULES wala parser (backup). doc = text ya [(line, bold)] -> (designs, reels, done_posts)"""
     if isinstance(doc, str):
@@ -772,14 +819,17 @@ def parse_doc(doc):
 
     designs, reels, done_posts = [], [], []
     carousel_no = 0
-    for s in split_sections(doc):
+    sections = split_sections(doc)
+    bare_stories = captionless_stories(sections)
+    for s in sections:
         label = s["label"].upper()
         desc = (s.get("desc") or "").upper()  # "POST 17 | REEL | NINJA" -> desc mein REEL
         all_urls = [clean_url(u.group(0)) for l in s["lines"] for u in URL_RE.finditer(l)]
         video_link = next((u for u in all_urls if VIDEO_LINK_RE.search(u)), None)
         has_image = any(is_image_link(u) or IG_POST_RE.search(u) for u in all_urls)
         if (re.search(r"REEL|VIDEO", label) or re.search(r"\bREEL\b|\bVIDEO\b", desc)
-                or (video_link and not has_image)
+                or (video_link and not has_image
+                    and not any(re.match(r"^\W*format\W+static", l, re.I) for l in s["lines"]))
                 or any(REEL_TEXT_RE.match(line) for line in s["lines"])):
             # reel aap khud banate ho (label se ya video link se pehchani) -> skip, summary mein
             why = f" [video link: {video_link[:60]}]" if video_link and not re.search(r"REEL|VIDEO", label) else ""
@@ -816,7 +866,8 @@ def parse_doc(doc):
             continue
         image_url = next((u for u in urls if not IG_POST_RE.search(u) and is_image_link(u)), None)
         ref_links = [u for u in urls if u != image_url and u != ig_url and not is_image_link(u)]
-        text_lines = [(l, b) for l, b in body if l and not (URL_RE.search(l) and len(l.split()) <= 3)]
+        text_lines = [(l, b) for l, b in body if l and not (URL_RE.search(l) and len(l.split()) <= 3)
+                      and not re.match(r"^\W*format\s*:", l, re.I)]
 
         # writer ne image ki jagah IMAGE PROMPT likha (label ke saath ya heading se pehle) -> image khud banegi
         prompt_lines = [s["lines"][0]] if is_image_prompt(s["lines"][0]) else []
@@ -917,12 +968,14 @@ def parse_doc(doc):
         product_url = next((u for u in ref_links if is_product_link(u)), None)
         # pakka product link nahi -> baqi store-jaise links baad mein page khol kar check (Product data hai?)
         maybe_products = [u for u in ref_links if u != product_url and not SOCIAL_RE.search(u)][:2]
-        designs.append(new_design("story" if "STOR" in label else "post", s["label"], content_text,
+        designs.append(new_design("story" if section_is_story(s) or any(s is x for x in bare_stories) else "post",
+                                  s["label"], content_text,
                                   image_url, ig_url, s["brief"], ref_links if s["brief"] else [], from_caption,
                                   product_url))
         designs[-1]["maybe_products"] = [] if s["brief"] else maybe_products
         designs[-1]["text_from_image"] = text_from_image and not image_prompt
         designs[-1]["section"] = s["label"]
+        designs[-1]["image_note"] = s.get("image_note")
         if image_prompt and not image_url:
             designs[-1]["image_prompt"] = image_prompt
     return designs, reels, done_posts
@@ -971,8 +1024,8 @@ def before_after_links(body):
     return (found["before"], found["after"], labels.get("before", "BEFORE")) if len(found) == 2 else None
 
 
-SLIDE_RE = re.compile(r"^\W*slide\s*(\d+)\W*?(?:[:\-–;]\s*(?P<rest>.*))?$", re.I)
-SLIDE_CONT_RE = re.compile(r"^\W*(\d{1,2})\W*?(?:[:\-–;]\s*(?P<rest>.*))?$", re.I)  # "2; url" (Slide 1 ke baad)
+SLIDE_RE = re.compile(r"^\W*slide\s*(\d+)\W*?(?:[:\-–—;]\s*(?P<rest>.*))?$", re.I)
+SLIDE_CONT_RE = re.compile(r"^\W*(\d{1,2})\W*?(?:[:\-–—;]\s*(?P<rest>.*))?$", re.I)  # "2; url" (Slide 1 ke baad)
 
 
 def split_slides(body):
@@ -1097,6 +1150,23 @@ async def parse_with_chatgpt(doc):
     return designs, reels, done_posts
 
 
+def save_doc_image(src):
+    """Doc export ki data: image -> Output/doc_images/<hash>.jpg. Return parser ke liye URL (chhota icon -> None)."""
+    m = re.match(r"data:image/(jpeg|jpg|png|webp|gif);base64,(.+)", src or "", re.S)
+    if not m:
+        return None
+    raw = base64.b64decode(m.group(2))
+    if len(raw) < 3000:
+        return None
+    import hashlib
+    name = hashlib.md5(raw).hexdigest()[:16] + "." + m.group(1).replace("jpeg", "jpg")
+    folder = OUT_ROOT / "doc_images"
+    folder.mkdir(parents=True, exist_ok=True)
+    if not (folder / name).exists():
+        (folder / name).write_bytes(raw)
+    return f"https://{DOC_IMAGE_HOST}/{name}"
+
+
 class _DocHTML(HTMLParser):
     """Google Docs HTML export -> [(line, bold)]  (bold = line ka zyada tar text bold)."""
 
@@ -1125,6 +1195,15 @@ class _DocHTML(HTMLParser):
             self.block_bold = tag.startswith("h")
         if tag == "br":
             self._flush()
+            return
+        if tag == "img":
+            if self.skip:
+                return
+            src = a.get("src") or ""
+            url = src if src.startswith("http") else save_doc_image(src)
+            if url:
+                self._flush()
+                self.lines.append((url, False))
             return
         style = (a.get("style") or "").replace(" ", "")
         bold = tag in ("b", "strong") or "font-weight:700" in style or "font-weight:bold" in style \
@@ -1263,6 +1342,11 @@ async def download_source(url, dest_noext):
 async def download_image(url, dest_noext):
     """Designer profile (us ke cookies, Freepik login) se image download."""
     host = urlparse(url).netloc.lower()
+    if host == DOC_IMAGE_HOST:  # doc ke andar lagi image -> pehle se file hai
+        src = OUT_ROOT / "doc_images" / Path(urlparse(url).path).name
+        path = Path(str(dest_noext) + src.suffix)
+        path.write_bytes(src.read_bytes())
+        return path
     if ("freepik." in host or "magnific.com" in host) and not host.startswith("img."):
         return await download_freepik_or_screenshot(url, dest_noext)
     if "envato.com" in host:
@@ -2515,7 +2599,7 @@ def doc_post_count(designs, reels, done_posts):
 
 # reel ki pehchan: "On-screen reel text", "REEL TEXT", "10-SECOND REEL TEXT:", "Reel script" (Bandz / My gym)
 REEL_TEXT_RE = re.compile(
-    r"^\W*(?:on[ -]screen\s+(?:reel\s+)?(?:text|script)\b|"
+    r"^\W*(?:format\W+reels?\b|on[ -]screen\s+(?:reel\s+)?(?:text|script)\b|"
     r"(?:\d+\s*[- ]?\s*sec(?:ond)?s?\s+)?reel\s+(?:text|script|cover|title|hook)\b)", re.I)
 LOOSE_LABEL_RE = re.compile(r"^\W*(?:post|story|reel|carousel|video)\s*#?\s*\d+\b", re.I)
 
@@ -2639,6 +2723,8 @@ def build_design_message(company, designs, outputs=None, already=()):
             lines.append(CFG["site_photo_note"].format(n=file_no(d["image_path"])))
         elif d["image_path"]:
             lines.append(CFG["given_photo_note"].format(n=file_no(d["image_path"])))
+            if d.get("image_note"):
+                lines.append("Writer's instruction about this attached image: " + d["image_note"])
             if "_screenshot" in Path(d["image_path"]).stem:  # Envato download nahi hua -> preview ka screenshot
                 lines.append(CFG["screenshot_photo_note"])
         elif d.get("ig_shot"):
@@ -3682,14 +3768,18 @@ def file_number(company, file_name):
 
 def part_sections(doc, sets):
     """Doc ke sections ko sets (1-3, 4-6...) mein baanto. Reel / story / done wale section pichli post ke saath."""
-    set_of = {}
+    set_of, seen = {}, set()
     for gi, (_, outs, _) in enumerate(sets):
         for o in outs:
             d = o["d"]
-            set_of[d.get("section") if d.get("carousel") else d["label"]] = gi
+            key = ("c", d["carousel"]) if d.get("carousel") else id(d)
+            if key not in seen:  # ek label 2 dafa (Eliquid "Post 1", "Post 1") -> doc ki tarteeb se
+                seen.add(key)
+                set_of.setdefault(d.get("section") if d.get("carousel") else d["label"], []).append(gi)
     parts, cur = [[] for _ in sets], 0
     for s in split_sections(doc):
-        cur = set_of.get(s["label"], cur)
+        if set_of.get(s["label"]):
+            cur = set_of[s["label"]].pop(0)
         parts[cur].append(s)
     return parts
 
@@ -3782,33 +3872,19 @@ def save_splits(data):
     SPLITS_FILE.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
-async def trim_original_doc(tab, doc_id, first_sections, moved_labels):
-    """Asal bari file mein sirf set 1 (posts 1-3 + story) rakho — baqi posts ab apni nayi docs mein hain.
-    Pakka na ho sake to asal doc waisi hi rehti hai (sirf log), file phir bhi set 1 banati hai."""
-    html, text = part_html(first_sections)
-    HUB.designer_busy = True
-    try:
-        await HUB.call("designer", "focus_tab", tabId=tab)
-        await run_sleep(2)
-        doc_len = len("\n".join(l for l, _ in await fetch_doc(tab, doc_id)))  # poora select hua? isi se check
-        r = await HUB.exec("designer", tab, "gdoc_replace_all", html, text, doc_len) or {}
-        if not r.get("ok"):
-            log(f"  (asal doc chhoti nahi hui: {r.get('error')} — asal doc mein poora content reh gaya)")
-            return False
-        for _ in range(4):  # Docs save hone mein kuch second lagte hain
-            await run_sleep(6)
-            got = norm("\n".join(l for l, _ in await fetch_doc(tab, doc_id)))
-            first_ok = not first_sections or norm(first_sections[0]["label"]) in got
-            if first_ok and not any(norm(lbl) in got for lbl in moved_labels if len(norm(lbl)) > 4):
-                log("  Asal doc mein ab sirf set 1 (posts 1-3 + story) — baqi nayi docs mein")
-                return True
-        log("  ⚠ asal doc check: content poora nahi badla — doc khud dekh lein")
-        notify("Asal doc check karein", "Bari file ki asal doc chhoti karte waqt content theek nahi badla — doc dekh lein.")
-    except Exception as e:
-        log(f"  (asal doc chhoti nahi hui: {e})")
-    finally:
-        HUB.designer_busy = False
-    return False
+async def open_pending_parts(state):
+    """Cut hui file ke baqi hisse (nayi docs) khule milein: jo ban nahi chuke aur tab band hai -> background mein kholo."""
+    since = (datetime.now() - _timedelta(days=CFG.get("part_reopen_days", 7))).isoformat()
+    open_tabs = await HUB.call("designer", "list_doc_tabs")
+    for orig, parts in load_splits().items():
+        if str(state.get(orig, {}).get("at") or "") < since:
+            continue  # purani files: jo kuch khula nahi woh aap ne khud sambhal liya
+        for title, part_id in parts:
+            if state.get(part_id, {}).get("status") == "done" or is_skipped(title)                     or any(part_id in t["url"] for t in open_tabs):
+                continue
+            await HUB.call("designer", "open_tab", active=False,
+                           url=f"https://docs.google.com/document/d/{part_id}/edit")
+            log(f"  Baqi hissa khol diya: {title}")
 
 
 async def split_doc_into_parts(folder, doc, sets):
@@ -4020,15 +4096,18 @@ async def process_doc(tab_id, doc_id, company, terms, out_dir, summary, prepared
     if (CFG.get("split_big_docs", True) and not summary.get("only_post") and not PART_RE.search(summary.get("file", ""))
             and not no_split(company)):
         sets = file_sets(expand_outputs(designs))
+        parts_ok = True
         if len(sets) > 1:
+            parts_now = part_sections(doc, sets)
+            parts_ok = bool(parts_now[0]) and not any(o and not x for (_, o, _), x in zip(sets, parts_now))
+            if not parts_ok:  # hisse pakke nahi -> doc ko haath nahi lagana, posts isi file mein sets mein banengi
+                log("  (bari file ke hisse pakke nahi bane — doc waisi hi, posts isi file mein sets mein)")
+        if len(sets) > 1 and parts_ok:
             splits = load_splits()
             already_started = load_progress().get(doc_id) or load_state().get(doc_id, {}).get("status") == "partial"
             if doc_id not in splits and not already_started:
                 splits[doc_id] = await split_doc_into_parts(summary["file"], doc, sets)
-                save_splits(splits)
-                if splits[doc_id]:  # baqi posts nayi docs mein chali gayin -> asal doc mein sirf set 1 (+ story)
-                    await trim_original_doc(tab_id, doc_id, part_sections(doc, sets)[0],
-                                            [s["label"] for p in part_sections(doc, sets)[1:] for s in p])
+                save_splits(splits)  # asal doc writer ki invoice ka proof hai: us mein kabhi kuch nahi likhna, sirf copy nayi docs mein
             if doc_id in splits:  # (dobara chale to nayi docs dobara nahi banti)
                 keep = {id(o["d"]) for o in sets[0][1]}
                 designs = [d for d in designs if id(d) in keep]
@@ -4441,6 +4520,11 @@ async def run_all(only=None, only_post=None):
         if opt:
             log(f"(Note: {', '.join(opt)} connected nahi — un ke links wali images nahi aayengi)")
         state = load_state()
+        if PORT == 8765 and not only and not only_post:
+            try:
+                await open_pending_parts(state)
+            except Exception as e:
+                log(f"  (baqi hisse kholne mein masla: {e})")
         tabs = await HUB.call("designer", "list_doc_tabs")
         tabs = list(reversed(tabs))  # extension returns tab order left-to-right; start at the right edge
         # ek hi file 2 tabs mein khuli ho -> sirf ek dafa line mein

@@ -1,7 +1,10 @@
 import asyncio
+import base64
 import re
 import shutil
+import tempfile
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 from contextlib import contextmanager
 from pathlib import Path
@@ -1493,3 +1496,111 @@ class NearDuplicateTests(unittest.TestCase):
                 self.assertFalse(server.drop_duplicate(other_o, [first]))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class Nov04SplitRegressionTests(unittest.TestCase):
+    """Enduring Roofing: 'Post 4 — Title' label nahi samjha, saari sections 'Post' -> pehla set khaali -> asal doc mit gayi."""
+
+    @staticmethod
+    def post(n, fmt="Static Post", link="https://share.google/abc"):
+        return [f"Post {n} — Title {n}", f"Format: {fmt}", "Headline:", f"Headline text {n}", link, "Caption:",
+                "A long caption line about roofing that is written for the readers of this post and goes on a while.",
+                "#Roofing #Enduring"]
+
+    def doc(self, *posts):
+        return [(l, False) for x in posts for l in x]
+
+    def test_em_dash_label_three_posts_do_not_split(self):
+        doc = self.doc(self.post(4, "Reel"), self.post(5), self.post(6))
+        designs, reels, _ = server.parse_doc(doc)
+        self.assertEqual([d["label"] for d in designs], ["Post 5", "Post 6"])
+        self.assertEqual(len(reels), 1)
+        self.assertEqual(server.file_sets(server.expand_outputs(designs))[0][0], None)
+
+    def test_static_format_with_video_link_is_still_a_post(self):
+        doc = self.doc(self.post(1), self.post(2), self.post(3, link="https://www.magnific.com/premium-video/storm_1.htm"))
+        designs, reels, _ = server.parse_doc(doc)
+        self.assertEqual([d["label"] for d in designs], ["Post 1", "Post 2", "Post 3"])
+        self.assertEqual(reels, [])
+
+    def test_same_label_everywhere_never_gives_an_empty_first_set(self):
+        doc = [(l, False) for n in range(5) for l in (f"https://share.google/x{n}", f"Headline {n}")]
+        designs, _, _ = server.parse_doc(doc)
+        sets = server.file_sets(server.expand_outputs(designs))
+        parts = server.part_sections(doc, sets)
+        self.assertGreater(len(sets), 1)
+        self.assertTrue(parts[0], "pehla set khaali -> asal doc mit jati")
+        self.assertEqual(sum(map(len, parts)), len(server.split_sections(doc)))
+
+    def test_automation_never_writes_into_the_writers_original_doc(self):
+        source = Path(server.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("gdoc_replace_all", source)  # invoice ka proof: asal doc kabhi na badle
+        self.assertFalse(hasattr(server, "trim_original_doc"))
+
+    def test_post_4_pipe_story_is_story_and_file_does_not_split(self):
+        doc = [("Post 12 | Story", False), ("Join us this weekend", False)]
+        for n in (9, 10, 11):
+            doc = self.doc(self.post(n)) + doc
+        designs, _, _ = server.parse_doc(doc)
+        self.assertEqual(designs[-1]["kind"], "story")
+        self.assertEqual(server.file_sets(server.expand_outputs(designs))[0][0], None)
+
+    def test_format_story_line_and_9_16_are_stories(self):
+        for hint in ("Format: Instagram Story", "Size 9:16"):
+            doc = self.doc(self.post(1), self.post(2), self.post(3)) + [("Post 4", False), (hint, False),
+                                                                        ("Headline:", False), ("Short text", False)]
+            self.assertEqual(server.parse_doc(doc)[0][-1]["kind"], "story", hint)
+
+    def test_post_without_caption_among_captioned_posts_is_story(self):
+        doc = self.doc(self.post(1), self.post(2), self.post(3)) + [
+            ("Post 4", False), ("Headline:", False), ("Join us this weekend", False), ("https://share.google/st", False)]
+        designs, _, _ = server.parse_doc(doc)
+        self.assertEqual([d["kind"] for d in designs], ["post", "post", "post", "story"])
+        self.assertEqual(server.file_sets(server.expand_outputs(designs))[0][0], None)
+
+    def test_no_caption_style_doc_is_not_turned_into_stories(self):
+        doc = [(l, False) for n in range(1, 5) for l in (f"Post {n}", "Headline:", f"Text {n}", f"https://share.google/x{n}")]
+        self.assertEqual({d["kind"] for d in server.parse_doc(doc)[0]}, {"post"})
+
+    def test_embedded_image_becomes_post_image_and_reaches_download(self):
+        raw = b"\xff\xd8\xff" + b"0" * 5000
+        src = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+        html = (f'<html><body><p><img src="{src}"></p><p>Use only the image on the right side please</p>'
+                '<p>POST 1 —</p><p>Heading: Game Day</p><p>Caption:</p><p>Love the Texans? Do both.</p></body></html>')
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(server, "OUT_ROOT", Path(tmp)):
+            doc = server.html_to_lines(html)
+            designs, _, _ = server.parse_doc(server.prepare_doc_format(doc)[0])
+            self.assertEqual(len(designs), 1)
+            self.assertEqual(designs[0]["label"], "POST 1")
+            self.assertIn(server.DOC_IMAGE_HOST, designs[0]["image_url"])
+            self.assertEqual(designs[0]["image_note"], "Use only the image on the right side please")
+            got = asyncio.run(server.download_image(designs[0]["image_url"], Path(tmp) / "image1"))
+            self.assertEqual(got.read_bytes(), raw)
+
+    def test_embedded_image_inside_post_is_that_posts_image(self):
+        raw = b"\xff\xd8\xff" + b"1" * 5000
+        src = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+        html = ('<html><body><p>Post 1</p><p>Heading</p><p>Hello</p>' f'<p><img src="{src}"></p>'
+                '<p>Caption</p><p>Long text</p><p>Post 2</p><p>Heading</p><p>No image</p></body></html>')
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(server, "OUT_ROOT", Path(tmp)):
+            designs, _, _ = server.parse_doc(server.html_to_lines(html))
+        self.assertIn(server.DOC_IMAGE_HOST, designs[0]["image_url"])
+        self.assertNotIn("doc-image", designs[0]["content"])
+        self.assertIsNone(designs[1]["image_url"])
+
+    def test_pending_part_tab_is_reopened_but_done_skipped_and_old_are_not(self):
+        now = server.datetime.now().isoformat()
+        state = {"a": {"status": "done", "at": now}, "b": {"status": "done", "at": now},
+                 "old": {"status": "done", "at": "2020-01-01T00:00:00"}, "p2": {"status": "done"}}
+        splits = {"a": [["A (4)", "p1"]], "b": [["B (4)", "p2"], ["B (5-7)", "p3"]], "old": [["O (4)", "p4"]]}
+        opened = []
+
+        async def call(role, cmd, **k):
+            if cmd == "list_doc_tabs":
+                return [{"url": "https://docs.google.com/document/d/p3/edit"}]
+            opened.append(k["url"])
+
+        with mock.patch.object(server, "load_splits", return_value=splits), mock.patch.object(server.HUB, "call", call), \
+                mock.patch.object(server, "is_skipped", return_value=False):
+            asyncio.run(server.open_pending_parts(state))
+        self.assertEqual(opened, ["https://docs.google.com/document/d/p1/edit"])
