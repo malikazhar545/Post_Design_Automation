@@ -289,6 +289,15 @@ def remember_chat(role, company, cid, title, refs=None):
     old = CHAT_MEMORY.setdefault(role, {}).get(norm(company)) or {}
     keep = old.get("refs", []) if old.get("id") == cid else []
     CHAT_MEMORY[role][norm(company)] = {"id": cid, "title": title, "refs": sorted(set(keep) | set(refs or []))}
+    save_chat_memory()
+
+
+CHAT_LIST_CACHE = {}  # role -> (time, [{'id','title'}]) — har file par poori list na mangni pade (429)
+CHAT_ACCOUNTS_FILE = CHAT_MEMORY_FILE.parent / "chat_accounts.json"  # role -> ChatGPT account id (profile mein naya account?)
+ACCOUNT_CHECKED = {}  # role -> time
+
+
+def save_chat_memory():
     try:
         CHAT_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         CHAT_MEMORY_FILE.write_text(json.dumps(CHAT_MEMORY, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -296,7 +305,47 @@ def remember_chat(role, company, cid, title, refs=None):
         pass
 
 
-CHAT_LIST_CACHE = {}  # role -> (time, [{'id','title'}]) — har file par poori list na mangni pade (429)
+def forget_role_chats(role, why):
+    """Profile ka ChatGPT account badal gaya -> us ki saari purani chat yaadein (backup ke saath) hatao."""
+    if CHAT_MEMORY.get(role):
+        backup = CHAT_MEMORY_FILE.with_name(f"chat_memory.{role}.{datetime.now():%Y%m%d-%H%M%S}.bak.json")
+        try:
+            backup.write_text(json.dumps({role: CHAT_MEMORY[role]}, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+        log(f"  {role.upper()}: {why} — {len(CHAT_MEMORY[role])} purani chat yaadein hata di (backup: {backup.name}); "
+            f"companies ki chats Wajid / aap ke approved designs se nayi banengi")
+    CHAT_MEMORY[role] = {}
+    CHAT_LIST_CACHE.pop(role, None)
+    save_chat_memory()
+
+
+async def check_chat_account(chat):
+    """Waseem / Wajid ki extension doosre ChatGPT account wali profile mein lagi? -> purani chats wahan hain hi nahi
+    (404 'You don't have access'). Account id badla to yaadein khud saaf. 10 min mein ek dafa."""
+    if time.time() - ACCOUNT_CHECKED.get(chat.role, 0) < 600:
+        return
+    try:
+        me = await chat.api("/backend-api/me", retry=False)
+    except Exception as e:
+        log(f"    ({chat.role}: ChatGPT account check nahi hua: {e})")
+        return
+    account = str(me.get("id") or me.get("email") or "")
+    if not account:
+        return
+    ACCOUNT_CHECKED[chat.role] = time.time()
+    try:
+        accounts = json.loads(CHAT_ACCOUNTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        accounts = {}
+    if accounts.get(chat.role) == account:
+        return
+    if accounts.get(chat.role):
+        forget_role_chats(chat.role, "naya ChatGPT account")
+        notify("Naya ChatGPT account", f"{chat.role.upper()} profile mein naya account — purani chats ki yaad hata di, "
+                                       "nayi chats khud banengi.", sticky=False)
+    accounts[chat.role] = account
+    CHAT_ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2), encoding="utf-8")
 
 
 def log(msg):
@@ -2041,11 +2090,27 @@ class Chat:
             await run_sleep(3)
         raise RuntimeError("ChatGPT reply time-out")
 
+    async def chat_exists(self, cid):
+        """Chat ChatGPT mein hai? Sidebar mein dikhe to haan; warna chat list (cache) — pata na chale to haan."""
+        def retired(c):  # aap ne / automation ne naam "OLD - ..." rakha -> yeh chat ab kabhi use nahi honi
+            return bool(re.match(r"^\W*old\b", c.get("title") or "", re.I))
+        try:
+            hit = next((c for c in await HUB.exec(self.role, self.tab, "sidebar_chats", 5, timeout=60) or []
+                        if c.get("id") == cid), None)
+            if hit:
+                return not retired(hit)
+            items = await self.all_chats()
+        except Exception:
+            return True
+        hit = next((c for c in items if c["id"] == cid), None)
+        return not items or (hit is not None and not retired(hit))
+
     async def find_chat(self, terms, company, doc_text):
         """terms = [poora file naam, company, chhote hisse...] (case-insensitive).
         Pehle poore naam se, phir hisson se; har milti chat ka content file se verify.
         Return (conv id, chat title) ya (None, None)."""
         await self.goto(CHATGPT + "/")
+        await check_chat_account(self)
         nterms = [norm(t) for t in terms]
 
         def score(title):
@@ -2099,6 +2164,11 @@ class Chat:
         if known and not valid_chat_id(known.get("id")):  # tooti yaad -> bhool kar dobara dhoondo
             log(f"  {self.role}: yaad mein ghalat chat id {known.get('id')!r} — dobara dhoondh raha hoon")
             CHAT_MEMORY[self.role].pop(norm(company), None)
+            known = None
+        if known and not await self.chat_exists(known["id"]):  # aap ne chat delete ki / doosra account
+            log(f"  {self.role}: yaad wali chat \"{known['title']}\" ab ChatGPT mein nahi — nayi dhoondh / bana raha hoon")
+            CHAT_MEMORY[self.role].pop(norm(company), None)
+            save_chat_memory()
             known = None
         if known:  # pehle verify ho chuki -> dobara bhari request nahi
             log(f"  {self.role}: \"{known['title']}\" (yaad se)")
@@ -2247,6 +2317,19 @@ def image_ids_after(conv, since):
     return ids
 
 
+def code_composited(conv, since):
+    """Mere message ke baad ChatGPT ne final design 'sandbox:' file (Python se joda) di? Tab chat ki image adhoori hai."""
+    for m in ordered_messages(conv):
+        if m["author"]["role"] != "assistant" or (m.get("create_time") or 0) < since:
+            continue
+        if str(m.get("recipient") or "").startswith(("container", "python")):
+            return True  # Python / container chala -> design code se jod raha hai (final jawab se pehle bhi pakra jaye)
+        for p in m.get("content", {}).get("parts", []) or []:
+            if isinstance(p, str) and "sandbox:/" in p:
+                return True
+    return False
+
+
 def image_file_ids(conv):
     ids = []
     for m in ordered_messages(conv):
@@ -2258,6 +2341,21 @@ def image_file_ids(conv):
                 if fid and fid not in ids:
                     ids.append(fid)
     return ids
+
+
+async def wajid_chat_loaded(chat, timeout=60):
+    """Chat poori khuli? message box + purane messages page par (bina load ke bheja message gaya hi nahi tha)."""
+    for _ in range(timeout // 2):
+        try:
+            if await HUB.exec(chat.role, chat.tab, "has", SEL["composer"]) and \
+                    await HUB.exec(chat.role, chat.tab, "has", "[data-message-author-role], [data-turn]"):
+                await run_sleep(2)
+                return True
+        except Exception:
+            pass
+        await run_sleep(2)
+    log(f"  ({chat.role}: chat {timeout}s mein poori load nahi hui — phir bhi koshish)")
+    return False
 
 
 async def get_instructions_from_wajid(company, terms, doc_text):
@@ -2273,35 +2371,62 @@ async def get_instructions_from_wajid(company, terms, doc_text):
     if last:
         log(f"  Wajid chat ka aakhri message hi instructions hai ({len(last)} chars) — dobara nahi poocha")
         return last
-    try:
-        sent_at = await wajid.send(CFG["wajid_ask_message"])
-    except ChatLimit as e:
-        log(f"  {e} — chat mein pehle se maujood instructions use kar raha hoon")
-        text = existing_instructions(conv)
-        if len(text) < 300:
-            notify("Instructions nahi mili", f"{company}: {e} aur chat mein purani instructions bhi nahi")
-            raise RuntimeError(f"{e} — aur '{company}' ki purani instructions bhi nahi mili")
-        log(f"  Instructions mil gayin ({len(text)} chars)")
-        return text
-    await wajid.wait_done(CFG["timeouts_minutes"]["text_reply"])
-    text = ""
-    for _ in range(3):  # jawab page par poora ho chuka (wait_done) -> API se sirf 1-3 dafa
-        await run_sleep(4)
-        conv = await wajid.conversation(cid)
-        text = assistant_text_after(conv, sent_at)
-        if len(text) >= 300:
+    sent_at, arrived_ok = None, False
+    for attempt in range(2):  # Ficus: chat poori load nahi hui thi -> message gaya hi nahi, purana kachra utha liya
+        await wajid_chat_loaded(wajid)
+        try:
+            sent_at = await wajid.send(CFG["wajid_ask_message"])
+        except ChatLimit as e:
+            log(f"  {e} — chat mein pehle se maujood instructions use kar raha hoon")
+            text = existing_instructions(conv)
+            if not real_instructions(text):
+                notify("Instructions nahi mili", f"{company}: {e} aur chat mein purani instructions bhi nahi")
+                raise RuntimeError(f"{e} — aur '{company}' ki purani instructions bhi nahi mili")
+            log(f"  Instructions mil gayin ({len(text)} chars)")
+            return text
+        for _ in range(4):
+            await run_sleep(5)
+            conv = await wajid.conversation(cid)
+            if any(m["author"]["role"] == "user" and (m.get("create_time") or 0) >= sent_at - 2
+                   for m in ordered_messages(conv)):
+                arrived_ok = True
+                break
+        if arrived_ok:
             break
-    if len(text) < 300:
+        log(f"  (Wajid: message chat mein nahi pahuncha — page dobara khol kar phir bhej raha hoon {attempt + 1}/2)")
+        await wajid.goto(f"{CHATGPT}/c/{cid}")
+    text = ""
+    if arrived_ok:
+        await wajid.wait_done(CFG["timeouts_minutes"]["text_reply"])
+        # lamba jawab (20k chars): ChatGPT likhna band kare AUR do dafa parhne par lambai same ho -> poora (aadha copy nahi)
+        last_len, steady = -1, 0
+        for _ in range(24):
+            await run_sleep(8)
+            conv = await wajid.conversation(cid)
+            text = assistant_text_after(conv, sent_at)
+            steady = steady + 1 if len(text) == last_len and text else 0
+            last_len = len(text)
+            if steady >= 1 and not await wajid.generating():
+                break
+    if not real_instructions(text):
         arrived = any(m["author"]["role"] == "user" and (m.get("create_time") or 0) >= sent_at
                       for m in ordered_messages(conv))
         log(f"  Wajid se naya jawab nahi aaya ({'message gaya tha' if arrived else 'message gaya hi nahi — limit?'}) "
             f"— chat mein pehle se maujood instructions dhoond raha hoon")
         text = existing_instructions(conv)
-    if len(text) < 300:
-        notify("Instructions nahi mili", f"{company}: Wajid se instructions nahi mili — yeh file manual karni hogi")
+    if not real_instructions(text):
+        notify("Instructions nahi mili", f"{company}: Wajid se asal instructions nahi mili — yeh file manual karni hogi")
         raise RuntimeError(f"Wajid se '{company}' ki instructions nahi mili (khaali jawab) — Waseem mein chat NAHI banayi")
     log(f"  Instructions mil gayin ({len(text)} chars)")
     return text
+
+
+def real_instructions(text):
+    """Asal branding instructions? (Beyond the Budget: 459 chars ka 'sandbox' design links wala jawab instructions
+    maan liya gaya tha.) Lambi honi chahiyen aur design files / download links nahi."""
+    text = (text or "").strip()
+    return (len(text) >= CFG.get("min_instructions_chars", 1500) and "sandbox:/" not in text
+            and len(URL_RE.findall(text)) <= 6)
 
 
 def existing_instructions(conv, only_last=False):
@@ -2320,7 +2445,7 @@ def existing_instructions(conv, only_last=False):
             continue
         parts = (m.get("content") or {}).get("parts") or []
         ask = " ".join(p for p in parts if isinstance(p, str))
-        if visible_user(m) and re.search(r"in?str?u?ctions?|guideline|branding", ask, re.I):
+        if visible_user(m) and re.search(r"in?str?u?ctions?|guidelines?", ask, re.I):
             reply = []
             for n in msgs[i + 1:]:
                 if visible_user(n):
@@ -2329,7 +2454,7 @@ def existing_instructions(conv, only_last=False):
                 if n["author"]["role"] == "assistant" and c.get("content_type") in ("text", "multimodal_text"):
                     reply += [p for p in c.get("parts") or [] if isinstance(p, str) and p.strip()]
             text = "\n\n".join(reply).strip()
-            if len(text) >= 300:
+            if real_instructions(text):
                 return text
     return ""
 
@@ -2365,7 +2490,12 @@ async def create_waseem_chat(waseem, company, instructions, files=()):
         known_ids = {c["id"] for c in await HUB.exec("waseem", waseem.tab, "sidebar_chats", 5) or []}
     except Exception:
         known_ids = set()
-    await waseem.send(instructions + "\n\n" + CFG["waseem_save_message"].format(company=company), files)
+    # chat banate waqt hi aap ke approved designs saath: logo + style wahin se (naya account: khaali chat, gandi quality)
+    refs = [] if files else style_refs(company)
+    note = CFG["waseem_save_message"].format(company=company)
+    if refs:
+        note += "\n" + CFG["create_refs_note"].format(company=company, n=len(refs))
+    await waseem.send(instructions + "\n\n" + note, list(files) or refs)
     await waseem.wait_done(CFG["timeouts_minutes"]["text_reply"])
     cid = None
     for _ in range(120):  # lambi instructions -> ChatGPT der se nayi chat ka link deta hai
@@ -2389,7 +2519,7 @@ async def create_waseem_chat(waseem, company, instructions, files=()):
         raise RuntimeError("Nayi Waseem chat ka id nahi mila")
     await run_sleep(3)
     await waseem.api(f"/backend-api/conversation/{cid}", "PATCH", {"title": company})
-    remember_chat("waseem", company, cid, company)
+    remember_chat("waseem", company, cid, company, refs=[reference_memory_key(company, r) for r in refs])
     if "waseem" in CHAT_LIST_CACHE:  # nayi chat foran list mein (isi company ki agli file ko mil jaye)
         CHAT_LIST_CACHE["waseem"][1].insert(0, {"id": cid, "title": company})
     log(f"  Waseem mein nayi chat bani, naam rakha: {company}")
@@ -2449,9 +2579,9 @@ async def refresh_company_chat(waseem, company, old_cid, old_title):
         await run_sleep(4)
         conv = await waseem.conversation(old_cid)
         text = assistant_text_after(conv, sent_at)
-        if len(text) >= 300:
+        if real_instructions(text):
             break
-    if len(text) < 300:  # jawab na aaya -> chat banate waqt di gayi instructions (pehla message)
+    if not real_instructions(text):  # jawab na aaya -> chat banate waqt di gayi instructions (pehla message)
         text = existing_instructions(conv) or next(
             (p for m in ordered_messages(conv) if m["author"]["role"] == "user"
              for p in (m.get("content") or {}).get("parts") or [] if isinstance(p, str) and len(p) >= 300), "")
@@ -2503,6 +2633,8 @@ async def resolve_company_chat(waseem, company, terms, doc_text, out_dir):
         try:
             instructions = await get_instructions_from_wajid(company, terms, doc_text)
         except BrandChatNotFound:
+            if style_refs(company):  # aap ke approved designs website se behtar (Freshape: website se gandi bani)
+                raise
             log("  Dono profiles mein company chat nahi mili — file ki website se branding le raha hoon")
             brand = await collect_website_branding(HUB, company, doc_text, out_dir)
             instructions = brand["instructions"]
@@ -2737,7 +2869,11 @@ def build_design_message(company, designs, outputs=None, already=()):
             lines.append(CFG["brief_photo_note"] if d.get("brief") else CFG["no_photo_note"])
         if d.get("brief"):
             lines.append(CFG["brief_note"])
-        if d["content"] and not d.get("brief"):
+        if d.get("day"):  # Days: sab companies par wahi text, har company ki apni zaban mein
+            lines.append(CFG["day_text_note"].format(company=company, language=d.get("language") or
+                         "the SAME language as this company's earlier posts / approved reference designs in this chat")
+                         + "\n" + strip_emoji(d["content"]) + "\nEND OF TEXT")
+        elif d["content"] and not d.get("brief"):
             lines.append("EXACT HEADING TO PRINT ON THE IMAGE (every line is required; do not shorten, paraphrase, omit or replace):\n"
                          + strip_emoji(d["content"]) + "\nEND OF EXACT HEADING")
         elif d["content"]:
@@ -3354,7 +3490,11 @@ async def generate_and_download(waseem, cid, company, designs, out_dir, summary)
 
     # ---- final images -> Downloads\<date>\<company>\ (sirf images, stories bhi) ----
     # bari file ka set -> folder "10 (1-3)" (file number + set, andar sub-folder nahi)
-    final = final_dir(company, summary.get("file", "") + (f" ({summary['part']})" if summary.get("part") else ""))
+    if summary.get("final_override"):  # Days: pehle Output mein, phir Downloads\Days\<day>\<company>.jpg
+        final = Path(summary["final_override"])
+        final.mkdir(parents=True, exist_ok=True)
+    else:
+        final = final_dir(company, summary.get("file", "") + (f" ({summary['part']})" if summary.get("part") else ""))
     for o in results:
         if o.get("file") and not o.get("qa_fail"):
             dest = final / f"{o['name'].split(' (')[0]}{o['file'].suffix}"
@@ -3599,8 +3739,14 @@ async def wait_for_images(waseem, cid, before, expected, sent_at=None, retry_req
             # Post 3 = Post 2). Kaam khatam -> ChatGPT ki apni list (sahi order, sirf final images) lo.
             if sent_at is not None:
                 try:
-                    final = [i for i in image_ids_after(await waseem.conversation(cid), sent_at)
-                             if image_key(i) not in excluded]
+                    conv = await waseem.conversation(cid)
+                    if code_composited(conv, sent_at):
+                        # naya ChatGPT account: image tool se sirf background, phir Python se text jod kar 'sandbox' file
+                        # -> chat wali image sirf khaali background hai (HR 11). Woh nahi leni — post dobara banegi
+                        log("  ⚠ ChatGPT ne design Python/code se jod kar 'sandbox' file di — chat mein sirf khaali "
+                            "background hai; woh image nahi le raha, post dobara (image tool se) banwaunga")
+                        return []
+                    final = [i for i in image_ids_after(conv, sent_at) if image_key(i) not in excluded]
                     if len(final) >= expected:
                         return final
                 except Exception as e:
@@ -3762,7 +3908,10 @@ def file_number(company, file_name):
     own = company_from_title(name)
     if norm(own) != norm(company):
         return name
-    m = re.search(r"\d[\w-]*", name[len(own):])
+    rest = name[len(own):]
+    # 'Enduring Roofin2 1' / 'Roofin2 2': lafz ke andar wala 2 (typo) number nahi — alag likha number pehle
+    m = (re.search(r"(?<![A-Za-z])\d[\w-]*", re.sub(r"\s*\(\d+\)\s*$", "", rest))  # '(4)' = doc ki copy, number nahi
+         or re.search(r"\d[\w-]*", rest))
     return m.group(0).strip("-") if m else None
 
 
@@ -3875,16 +4024,26 @@ def save_splits(data):
 async def open_pending_parts(state):
     """Cut hui file ke baqi hisse (nayi docs) khule milein: jo ban nahi chuke aur tab band hai -> background mein kholo."""
     since = (datetime.now() - _timedelta(days=CFG.get("part_reopen_days", 7))).isoformat()
+    opened_file = OUT_ROOT / "parts_opened.json"  # har hissa sirf EK dafa khud khule — aap band karein to dobara nahi
+    try:
+        opened = set(json.loads(opened_file.read_text(encoding="utf-8")))
+    except Exception:
+        opened = set()
     open_tabs = await HUB.call("designer", "list_doc_tabs")
     for orig, parts in load_splits().items():
         if str(state.get(orig, {}).get("at") or "") < since:
             continue  # purani files: jo kuch khula nahi woh aap ne khud sambhal liya
         for title, part_id in parts:
-            if state.get(part_id, {}).get("status") == "done" or is_skipped(title)                     or any(part_id in t["url"] for t in open_tabs):
+            if any(part_id in t["url"] for t in open_tabs):
+                opened.add(part_id)  # khud khuli hai -> baad mein band karein to dobara nahi kholni
+                continue
+            if state.get(part_id, {}).get("status") == "done" or is_skipped(title) or part_id in opened:
                 continue
             await HUB.call("designer", "open_tab", active=False,
                            url=f"https://docs.google.com/document/d/{part_id}/edit")
+            opened.add(part_id)
             log(f"  Baqi hissa khol diya: {title}")
+    opened_file.write_text(json.dumps(sorted(opened)), encoding="utf-8")
 
 
 async def split_doc_into_parts(folder, doc, sets):
@@ -3922,6 +4081,39 @@ def final_dir(company, file_name=None):
     return d
 
 
+def text_coverage(expected, seen):
+    """Expected text ke kitne lafz image (OCR) mein mile (0..1)."""
+    we = _words(expected)
+    return len(we & _words(seen)) / len(we) if we else 1.0
+
+
+async def ocr_text_problems(outs):
+    """Muft local OCR: image par apni post/slide ka text hai ya nahi.
+    Enduring Roofin2 1: ChatGPT ne slide 1 banayi hi nahi, slide 2 do dafa -> pehli 'Slide 1' naam se save
+    (vision QA band thi). Ghalat sirf tab jab pakka ho: image par kisi AUR post/slide ka text (Ficus 8, Belle 11 bhi)."""
+    if not CFG["qa"].get("ocr_check", True):
+        return []
+    have = [o for o in outs if o.get("file") and not o["type"].startswith("mockup") and not o["d"].get("brief")
+            and not o["d"].get("ig_shot") and len(_words(o["d"].get("content"))) >= 3]
+    found = []
+    for o in have:
+        try:
+            seen = " ".join(await asyncio.to_thread(_ocr_lines, o["file"]))
+        except Exception as e:
+            log(f"  (OCR check nahi hua: {e})")
+            return []
+        if len(_words(seen)) < 3:
+            continue  # OCR ko kuch nazar nahi aaya (fancy font) -> faisla nahi
+        own = text_coverage(o["d"]["content"], seen)
+        other = max(((text_coverage(x["d"]["content"], seen), x) for x in have if x is not o
+                     and _words(x["d"]["content"]) != _words(o["d"]["content"])), default=(0, None), key=lambda t: t[0])
+        if other[0] >= 0.8 and own < 0.5:
+            found.append((o, f"this image shows the text of {other[1]['name']} instead of its own — "
+                             f"make it with exactly this text: {o['d']['content'][:300]}"))
+        # 'text missing' akela faisla nahi: fancy font (Freshape italic) par OCR kachra parhta hai
+    return found
+
+
 async def qa_batch(waseem, outs, company):
     """Saari images ek saath check (1 minute max). Sirf: size + text sahi / extra text to nahi.
     Return ([(o, issues)] ghalat wali, [unverified notes]).
@@ -3933,6 +4125,9 @@ async def qa_batch(waseem, outs, company):
         rw, rh = RATIOS.get(o["type"], (4, 5))
         if abs(w / h - rw / rh) > CFG["qa"]["ratio_tolerance"]:
             bad.setdefault(id(o), (o, []))[1].append(f"wrong size {w}x{h} — must be {rw}:{rh}")
+    for o, why in await ocr_text_problems(outs):
+        log(f"  OCR check: {o['name']} — {why}")
+        bad.setdefault(id(o), (o, []))[1].append(why)
     if CFG["qa"]["vision_check"] and outs:
         lines = []
         for i, o in enumerate(outs, 1):
@@ -4260,7 +4455,7 @@ def move_story_issues(summary):
     # sirf pehchan wala hissa dekho (heading «…» mein "story" lafz ho to bhi post hi rahe)
     is_story = lambda x: bool(re.search(r"\bstor(y|ies)\b", str(x).split("«")[0].split(":")[0], re.I))
     moved = []
-    for key in ("qa_fail", "image_fail", "dropped"):
+    for key in ("qa_fail", "image_fail", "dropped", "manual_todo"):
         items = summary.get(key) or []
         moved += [x for x in items if is_story(x)]
         if items:
@@ -4474,7 +4669,11 @@ async def auto_resume():
         return
     try:  # bijli ke baad Chrome ne files ki tabs wapis na kholi hon -> khud kholo
         open_urls = {t["url"].split("#")[0] for t in await HUB.call("designer", "list_doc_tabs")}
-        for doc in data.get("docs", []):
+        if open_urls:
+            # Koi bhi file khuli hai = Chrome ne tabs wapis kholi; jo nahi khuli woh AAP ne band ki thi
+            # (khud bana li / subscription khatam thi) -> dobara kabhi nahi kholni (HR 11, Freshape 12 phir khul gayi thin)
+            log("  (Chrome mein files khuli hain — band ki hui files dobara nahi khol raha)")
+        for doc in ([] if open_urls else data.get("docs", [])):
             if HUB.running:  # beech mein START / Gmail ne run shuru kar diya
                 return
             m = re.search(r"/document/d/([^/]+)", doc["url"])
@@ -4711,14 +4910,17 @@ async def run_all(only=None, only_post=None):
                     raise RuntimeError(preparation_errors[doc_id])
                 try:
                     await HUB.call("designer", "tab_info", tabId=tab["tabId"])  # tab abhi khuli hai?
-                except Exception:  # tab band kar di gayi -> link se dobara kholo
-                    log("  (file ki tab band thi — dobara khol raha hoon)")
-                    tab["tabId"] = await HUB.call("designer", "open_tab", url=tab["url"], active=True)
+                except Exception:  # tab AAP ne band ki = yeh file nahi banani (khud bana li) -> dobara kabhi nahi kholni
+                    log(f"[{i}/{total}] SKIP: {title} — aap ne file band kar di, is liye nahi bana raha (DONE nahi)")
+                    summary["skipped"] = True
+                    write_file_report(OUT_ROOT / today / folder, summary)
+                    continue
                 await process_doc(tab["tabId"], doc_id, company, terms, OUT_ROOT / today / folder, summary,
                                   prepared_doc=prepared[doc_id])
                 if move_story_issues(summary):  # sirf story reh gayi -> aap khud banaoge, file DONE
                     log(f"  Story skip (aap khud banaoge): {'; '.join(summary['story_skipped'])}")
-                if summary.get("qa_fail") or summary.get("image_fail") or summary.get("dropped"):
+                # 2 dafa nahi bani post/slide (manual_todo) bhi = file adhoori; DONE nahi (Next Level 10/11)
+                if summary.get("qa_fail") or summary.get("image_fail") or summary.get("dropped")                         or summary.get("manual_todo"):
                     raise RuntimeError("File incomplete — failed/missing images summary mein hain; DONE mark nahi ki")
                 if summary.get("designs") and not summary.get("made"):  # 0 images bani -> DONE kabhi nahi
                     raise RuntimeError("File incomplete — 0 images bani; DONE mark nahi ki")
@@ -4827,6 +5029,270 @@ async def run_all(only=None, only_post=None):
         HUB.designer_busy = False
         if not only and not only_post:
             clear_run_marker()  # kaam poora / normal band -> agli dafa khud start nahi
+        HUB.running = False
+        HUB.run_task = None
+        HUB.pause_requested = HUB.paused = False
+        HUB.pause_started = None
+        HUB.pause_signal.clear()
+        HUB.resume_signal.set()
+        await HUB.publish_status()
+
+
+# ---------------------------------------------------------------- Days ----
+# Dashboard "Days" tab: American days (Thanksgiving, Christmas...) — ek hi text sab companies par,
+# har company ki apni branding + zaban, background company ke kaam + din ka touch.
+# Output: Downloads\Days\<Day>\<Company>.jpg. Company list save rehti hai — har naye day par sirf naam + text.
+DAYS_FILE = OUT_ROOT / "day_posts.json"
+
+
+def load_days():
+    try:
+        data = json.loads(DAYS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data.setdefault("companies", [])
+    data.setdefault("jobs", {})
+    return data
+
+
+def save_days(data):
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    DAYS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def day_company_line(line):
+    """'Sauna Werk | German' -> ('Sauna Werk', 'German'); zaban na likhi -> None (company ki apni zaban)."""
+    name, _, lang = str(line).partition("|")
+    return re.sub(r"\s+", " ", name).strip(), (lang.strip() or None)
+
+
+def clean_company_list(lines):
+    out, seen = [], set()
+    for line in lines:
+        name, lang = day_company_line(line)
+        if name and norm(name) not in seen:
+            seen.add(norm(name))
+            out.append(f"{name} | {lang}" if lang else name)
+    return out
+
+
+def days_root():
+    base = Path(CFG.get("final_dir") or (Path.home() / "Downloads")).expanduser()
+    return base / CFG.get("days_folder", "Days")
+
+
+def day_file_path(day, company):
+    def clean(s):
+        return re.sub(r'[<>:"/\\|?*]', "", s).strip(" .")
+    return days_root() / clean(day) / f"{clean(company)}.jpg"
+
+
+def days_view(data):
+    # poora record (har saal ka har day) — naya sab se upar
+    jobs = sorted(({"key": k} | j for k, j in data["jobs"].items()), key=lambda j: j.get("at", ""), reverse=True)
+    jobs = [dict(j, folder=str(day_file_path(j.get("title") or j["day"], "x").parent)) for j in jobs]
+    return {"companies": data["companies"], "jobs": jobs, "running": bool(HUB.running),
+            "days_running": bool(HUB.running and str(HUB.current.get("file", "")).startswith("DAY ")),
+            "known": dashboard_references().get("companies", [])}
+
+
+def day_company_name(name):
+    """List ka chhota naam ('Angela', 'next level', 'Freshape') -> Waseem ki yaad wali company chat ka poora naam,
+    taake usi purani chat mein bane (quality) — nayi chat na bane."""
+    alias = company_alias(name)
+    if alias:
+        return alias
+    chats = CHAT_MEMORY.get("waseem", {})
+    flat = lambda s: norm(s).replace(" ", "")
+    want = flat(name)
+    if not want:
+        return name
+    # yaad ka title bhi company se mile ('sweet for agency' -> "Sweet institute" chat galti se judi thi)
+    same = lambda key, entry: want in flat(entry.get("title") or key) or flat(entry.get("title") or key) in want
+    for key, entry in chats.items():
+        if flat(key) == want and same(key, entry):
+            return entry.get("title") or key
+    hits = [(key, entry) for key, entry in chats.items()
+            if (flat(key).startswith(want) or want in flat(key)) and same(key, entry)]
+    if hits:  # kai mili -> sab se chhota naam (asal company; 'french' wali alag line mein khud exact milti hai)
+        key, entry = min(hits, key=lambda h: len(h[0]))
+        return entry.get("title") or key
+    return name
+
+
+def dashboard_days(do=None, q=None):
+    q = q or {}
+    data = load_days()
+    if do == "day_save_companies":
+        data["companies"] = clean_company_list(json.loads(q.get("companies", "[]")))
+        save_days(data)
+        return {"ok": True, "message": f"{len(data['companies'])} companies save ho gayin", **days_view(data)}
+    if do == "day_start":
+        day = re.sub(r"\s+", " ", q.get("day", "")).strip()
+        brief = (q.get("brief") or "").strip()
+        companies = clean_company_list(json.loads(q.get("companies", "[]")) or data["companies"])
+        if not day or not brief or not companies:
+            return {"ok": False, "message": "Day ka naam, common text aur kam az kam 1 company chahiye"}
+        if HUB.running or (HUB.run_task is not None and not HUB.run_task.done()):
+            return {"ok": False, "message": "Abhi files ban rahi hain — woh khatam ya STOP ho jayen, phir Days START"}
+        # saal ke saath: agle saal ka Thanksgiving is saal ke record / images ke upar nahi likhta
+        title = day if re.search(r"\b(19|20)\d\d\b", day) else f"{day} {datetime.now().year}"
+        key = norm(title)
+        job = data["jobs"].setdefault(key, {"day": day, "title": title, "results": {}})
+        if job.get("brief") and job["brief"] != brief:
+            job["results"] = {}  # text badla -> sab companies naye text se
+        job.update(day=day, title=title, brief=brief, companies=companies, at=datetime.now().isoformat(timespec="seconds"))
+        save_days(data)
+        HUB.running = True  # foran reserve: doosra START / Gmail run na chala de
+        HUB.pause_requested = HUB.paused = False
+        HUB.pause_signal.clear()
+        HUB.resume_signal.set()
+        HUB.run_task = asyncio.create_task(run_days(key))
+        return {"ok": True, "message": f"{day}: {len(companies)} companies ban rahi hain", **days_view(data)}
+    if do == "day_redo":  # ek company dobara banwani hai (pasand nahi aayi)
+        job = data["jobs"].get(q.get("key") or norm(q.get("day", "")))
+        if job:
+            job["results"].pop(norm(q.get("company", "")), None)
+            save_days(data)
+        return {"ok": True, "message": "Agli dafa START par yeh company dobara banegi", **days_view(data)}
+    return {"ok": True, **days_view(data)}
+
+
+def is_english(language):
+    return not language or norm(language) in ("english", "en", "eng", "american english", "us english")
+
+
+async def translate_day_text(text, language):
+    """Day ka common text -> company ki zaban (Wajid TEMPORARY chat). Image ko seedha translated text jata hai."""
+    wajid = Chat("wajid")
+    await wajid.goto(CHATGPT + "/?temporary-chat=true")
+    await ensure_chat_mode(wajid)
+    sent_at = await wajid.send(
+        f"Translate this short social-media greeting into natural, correct {language} as a native copywriter would write "
+        f"it for a business post. Keep the same number of lines and the same meaning; keep brand names unchanged. "
+        f"Reply with ONLY the translation between <<< and >>>, nothing else.\n\n{text}")
+    await wajid.wait_done(CFG["timeouts_minutes"]["text_reply"])
+    await run_sleep(2)
+    reply = await wajid.latest_reply(sent_at)
+    m = re.search(r"<<<\s*(.+?)\s*>>>", reply or "", re.S)
+    out = (m.group(1) if m else "").strip()
+    if not out or norm(out) == norm(text):
+        raise RuntimeError(f"{language} translation nahi mili")
+    return out
+
+
+async def make_day_post(waseem, day, brief, line, out_dir, title=None):
+    """Ek company ka day post: branding (Waseem chat / Wajid / aakhri folder ke designs) -> 1 image -> jpg."""
+    name, language = day_company_line(line)
+    company = day_company_name(name)
+    # sirf poora naam (+ yaad wala poora naam): aadha lafz ('Sweet') doosri company (Sweet Institute) ki chat pakad leta tha
+    terms = list(dict.fromkeys(t for t in (company, name) if t))
+    # ghalat yaad: 'Sweet for Agency' -> "Sweet institute" chat (pehle aadhe naam se judi) -> bhool jao, apni chat
+    known = CHAT_MEMORY.get("waseem", {}).get(norm(company))
+    flat = lambda s: norm(s).replace(" ", "")
+    if known and not (flat(company) in flat(known.get("title", "")) or flat(known.get("title", "")) in flat(company)):
+        log(f"  Yaad wali chat \"{known.get('title')}\" {company} ki nahi — bhool kar {company} ki apni chat")
+        CHAT_MEMORY["waseem"].pop(norm(company), None)
+        save_chat_memory()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary = {"file": f"{day} - {company}", "reels": [], "done": [], "designs": 1, "error": None,
+               "final_override": str(out_dir / "final")}
+    cid, website_brand = await resolve_company_chat(waseem, company, terms, brief, out_dir)
+    if not is_english(language):
+        log(f"  Text {language} mein: {brief.splitlines()[0][:80]}")
+        language = (f"{language} — the text below is ALREADY translated into {language}: print it EXACTLY as written, "
+                    f"never in English")
+    d = new_design("post", day, brief)
+    d.update(day=True, language=language, no_mockups=True,
+             image_prompt=CFG["day_image_note"].format(day=day, company=company))
+    if website_brand:
+        d["website_brand"] = website_brand
+    await waseem.goto(f"{CHATGPT}/c/{cid}")
+    await generate_and_download(waseem, cid, company, [d], out_dir, summary)
+    imgs = sorted(p for p in Path(summary["final_override"]).glob("*") if IMAGE_EXT_RE.search(p.name))
+    if not imgs:
+        why = summary.get("qa_fail") or summary.get("image_fail") or summary.get("manual_todo") or ["image nahi bani"]
+        raise RuntimeError("; ".join(map(str, why)))
+    from PIL import Image
+    dest = day_file_path(title or day, company if len(company) >= len(name) else name)  # 'Angela' -> 'Angela McIntyre.jpg'
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    Image.open(imgs[0]).convert("RGB").save(dest, "JPEG", quality=95)
+    for p in imgs:  # Output ki copy kaafi; final folder khaali
+        p.unlink(missing_ok=True)
+    return dest
+
+
+async def run_days(key):
+    HUB.run_task = asyncio.current_task()
+    HUB.running = True
+    await HUB.publish_status()
+    try:
+        missing = [r.upper() for r in ("waseem", "wajid") if r not in HUB.clients]
+        if missing:
+            log(f"Days: yeh profiles connected nahi: {', '.join(missing)} — Chrome profiles khol kar dobara START")
+            return
+        data = load_days()
+        job = data["jobs"][key]
+        day, brief = job["day"], job["brief"]
+        title = job.get("title") or day  # folder / record: "Thanksgiving 2026"; ChatGPT ko sirf "Thanksgiving"
+        todo = [c for c in job["companies"]
+                if job["results"].get(norm(day_company_line(c)[0]), {}).get("status") != "done"]
+        log(f"DAYS: {day} — {len(todo)} companies banengi (pehle se bani: {len(job['companies']) - len(todo)})")
+        waseem = Chat("waseem")
+        today = datetime.now().strftime("%Y-%m-%d")
+        for i, line in enumerate(todo, 1):
+            name = day_company_line(line)[0]
+            HUB.queue_view = [f"DAY {day}: {day_company_line(c)[0]}" for c in todo[i:]]
+            # overview: "Thanksgiving — Angela · 3 / 24 · 2 ban gayin" (poori list ki ginti, sirf baqi ki nahi)
+            HUB.current = {"file": f"DAY {day}: {name}", "company": name, "day": day,
+                           "i": job["companies"].index(line) + 1, "total": len(job["companies"]),
+                           "made": sum(r.get("status") == "done" for r in job["results"].values()),
+                           "since": time.time()}
+            await HUB.publish_status()
+            if i > 1:
+                await chatgpt_rest(CFG.get("rest_between_files_minutes", 2), f"agli company '{name}' se pehle")
+                HUB.current["since"] = time.time()
+            log(f"[{i}/{len(todo)}] {day}: {name}")
+            res = {"company": name, "at": datetime.now().isoformat(timespec="seconds")}
+            stop = False
+            try:
+                out = OUT_ROOT / today / safe_name(f"Days {title}") / safe_name(name)
+                text = brief
+                lang = day_company_line(line)[1]
+                if not is_english(lang):  # translation ek dafa (har zaban), record mein save
+                    text = job.setdefault("translations", {}).get(lang)
+                    if not text:
+                        text = await translate_day_text(brief, lang)
+                        fresh = load_days()
+                        fresh["jobs"][key].setdefault("translations", {})[lang] = text
+                        save_days(fresh)
+                        job["translations"][lang] = text
+                res.update(status="done", file=str(await make_day_post(waseem, day, text, line, out, title)))
+                log(f"  ✔ {day}: {name} -> {res['file']}")
+            except ChatLimit as e:
+                res.update(status="error", error=f"ChatGPT limit: {e}")
+                log(f"  ✘ {name}: ChatGPT limit — baqi companies baad mein (Days START dobara)")
+                stop = True
+            except Exception as e:
+                res.update(status="error", error=str(e)[:300])
+                log(f"  ✘ {day}: {name} nahi bani — {e}")
+            data = load_days()  # dashboard ne beech mein list save ki ho
+            job = data["jobs"][key]
+            job["results"][norm(name)] = res
+            save_days(data)
+            if stop:
+                break
+        done = sum(r.get("status") == "done" for r in job["results"].values())
+        folder = day_file_path(title, "x").parent
+        log(f"DAYS KHATAM: {day} — {done} companies ki bani. Folder: {folder}")
+        notify(f"{day} posts", f"{done} companies ki bani — {folder}", sticky=False)
+    except Exception as e:
+        log(f"DAYS ERROR: {e}")
+        traceback.print_exc()
+    finally:
+        HUB.current = {}
+        HUB.queue_view = []
+        HUB.designer_busy = False
         HUB.running = False
         HUB.run_task = None
         HUB.pause_requested = HUB.paused = False
@@ -4979,6 +5445,8 @@ async def http_route(connection, request):
                 docs.append({"file": f, "skip": is_skipped(f),
                              "done": bool(m) and state.get(m.group(1), {}).get("status") == "done"})
             return http_reply(connection, {"docs": docs, "available": True})
+        if path == "/api/days":
+            return http_reply(connection, dashboard_days())
         if path == "/api/references":
             return http_reply(connection, dashboard_references())
         if path == "/api/gmail":
@@ -4991,6 +5459,8 @@ async def http_route(connection, request):
                 return http_reply(connection, {"ok": False, "message": "forbidden"}, status=403)
             if q.get("do") == "save_references":
                 return http_reply(connection, dashboard_references(q.get("company", ""), q.get("paths", "[]")))
+            if q.get("do", "").startswith("day_"):
+                return http_reply(connection, dashboard_days(q["do"], q))
             if q.get("do") == "open_folder":
                 return http_reply(connection, dashboard_open_folder(q.get("path", "")))
             if q.get("do", "").startswith("gmail_"):

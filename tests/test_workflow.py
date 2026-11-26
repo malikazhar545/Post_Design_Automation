@@ -99,7 +99,7 @@ class FormattingTests(unittest.TestCase):
 
 class WorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_wajid_reuses_last_instructions_and_limit_backup(self):
-        instructions = "Use these existing company instructions with the exact saved brand rules. " * 8
+        instructions = "Use these existing company instructions with the exact saved brand rules. " * 25
         def message(role, text, hidden=False):
             return {"author": {"role": role}, "content": {"content_type": "text", "parts": [text]},
                     "metadata": {"is_visually_hidden_from_conversation": hidden}}
@@ -899,7 +899,9 @@ class DashboardSkipTests(unittest.IsolatedAsyncioTestCase):
         await hub.checkpoint()  # ek hi dafa (finally blocks ki cleanup chalti rahe)
 
     def test_skip_action_and_report(self):
-        with patch.object(server, "log"):
+        # asli Output\skip.json kabhi nahi (yeh test pehle aap ki dashboard skip list khaali kar deta tha)
+        with work_directory() as skip_dir, patch.object(server, "SKIP_FILE", skip_dir / "skip.json"), \
+                patch.object(server.HUB, "skip", set()), patch.object(server, "log"):
             self.assertTrue(server.dashboard_skip("skip", "Wear Wood 8")["ok"])
             self.assertIn(server.norm("Wear Wood 8"), server.HUB.skip)
             server.dashboard_skip("unskip", "Wear Wood 8")
@@ -1047,16 +1049,19 @@ class FindChatTests(unittest.IsolatedAsyncioTestCase):
         chat.api = AsyncMock(side_effect=AssertionError("API nahi chalni chahiye thi"))
         chat.all_chats = AsyncMock(side_effect=RuntimeError("429"))
         exec_mock = AsyncMock(return_value=sidebar)
+        patcher = patch.object(server, "check_chat_account", new=AsyncMock())  # account check alag test mein
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return chat, exec_mock
 
     async def test_memory_hit_needs_no_list(self):
-        chat, ex = self._chat([])
         cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        chat, ex = self._chat([{"id": cid, "title": "Belle Clinic"}])  # sidebar mein dikhi -> list API nahi
         with patch.dict(server.CHAT_MEMORY, {"waseem": {"belle clinic": {"id": cid, "title": "Belle Clinic"}}}, clear=True),              patch.object(server.HUB, "exec", new=ex), patch.object(server, "log"),              patch.object(server, "remember_chat"):
             found = await chat.find_chat(["Belle Clinic 8", "Belle Clinic"], "Belle Clinic", "doc")
         self.assertEqual(found, (cid, "Belle Clinic"))
         chat.all_chats.assert_not_awaited()
-        ex.assert_not_awaited()
+        chat.api.assert_not_awaited()
 
     async def test_sidebar_hit_needs_no_api(self):
         chat, ex = self._chat([{"id": "s1", "title": "E Liquid"}])
@@ -1354,7 +1359,7 @@ class ChatRefreshTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("dental care", server.chat_refresh_pending())
             chat = SimpleNamespace(goto=AsyncMock(), send=AsyncMock(return_value=1.0), wait_done=AsyncMock(),
                                    conversation=AsyncMock(return_value={}), api=AsyncMock())
-            with patch.object(server, "assistant_text_after", return_value="BRAND RULES " * 40), \
+            with patch.object(server, "assistant_text_after", return_value="BRAND RULES " * 150), \
                  patch.object(server, "create_waseem_chat", new=AsyncMock(return_value="new1")) as create, \
                  patch.object(server, "run_sleep", new=AsyncMock()), patch.object(server, "notify"), \
                  patch.object(server, "log"):
@@ -1600,7 +1605,256 @@ class Nov04SplitRegressionTests(unittest.TestCase):
                 return [{"url": "https://docs.google.com/document/d/p3/edit"}]
             opened.append(k["url"])
 
-        with mock.patch.object(server, "load_splits", return_value=splits), mock.patch.object(server.HUB, "call", call), \
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(server, "OUT_ROOT", Path(tmp)), \
+                mock.patch.object(server, "load_splits", return_value=splits), mock.patch.object(server.HUB, "call", call), \
                 mock.patch.object(server, "is_skipped", return_value=False):
             asyncio.run(server.open_pending_parts(state))
-        self.assertEqual(opened, ["https://docs.google.com/document/d/p1/edit"])
+            self.assertEqual(opened, ["https://docs.google.com/document/d/p1/edit"])
+            opened.clear()
+            asyncio.run(server.open_pending_parts(state))  # aap ne tab band kar di -> dobara nahi khulni
+            self.assertEqual(opened, [])
+
+
+class CodeCompositedReplyTests(unittest.TestCase):
+    """Naya ChatGPT account: image tool se sirf background, phir Python se text -> chat ki image khaali background."""
+
+    @staticmethod
+    def conv(*msgs):
+        mapping, parent = {}, None
+        for n, (role, recipient, part, t) in enumerate(msgs):
+            mapping[str(n)] = {"parent": parent, "message": {"author": {"role": role}, "recipient": recipient,
+                                                           "create_time": t, "content": {"parts": [part]}}}
+            parent = str(n)
+        return {"mapping": mapping, "current_node": parent}
+
+    def test_python_or_sandbox_after_my_message_is_rejected(self):
+        img = {"content_type": "image_asset_pointer", "asset_pointer": "sediment://file_bg"}
+        c = self.conv(("user", "all", "Post 1", 10), ("assistant", "t2uay3k.sj1i4kz", "", 11), ("tool", "all", img, 12),
+                      ("assistant", "container.exec", "", 13))
+        self.assertTrue(server.code_composited(c, 10))
+        c = self.conv(("user", "all", "Post 1", 10), ("assistant", "all", "![x](sandbox:/workspace/a.png)", 11))
+        self.assertTrue(server.code_composited(c, 10))
+
+    def test_direct_image_generation_is_accepted_and_old_turns_ignored(self):
+        img = {"content_type": "image_asset_pointer", "asset_pointer": "sediment://file_ok"}
+        c = self.conv(("assistant", "container.exec", "", 5), ("user", "all", "Post 1", 10),
+                      ("assistant", "t2uay3k.sj1i4kz", "", 11), ("tool", "all", img, 12))
+        self.assertFalse(server.code_composited(c, 10))
+
+
+class ChatAccountChangeTests(unittest.TestCase):
+    """Waseem extension naye ChatGPT account wali profile mein lagi -> purani chat yaadein khud hatni chahiyen."""
+
+    def run_check(self, accounts_before, me_id, memory):
+        with tempfile.TemporaryDirectory() as tmp:
+            accounts = Path(tmp) / "chat_accounts.json"
+            if accounts_before is not None:
+                accounts.write_text(server.json.dumps(accounts_before), encoding="utf-8")
+            chat = server.Chat("waseem")
+            chat.api = mock.AsyncMock(return_value={"id": me_id})
+            with mock.patch.object(server, "CHAT_ACCOUNTS_FILE", accounts), \
+                    mock.patch.object(server, "CHAT_MEMORY_FILE", Path(tmp) / "chat_memory.json"), \
+                    mock.patch.dict(server.CHAT_MEMORY, memory, clear=True), \
+                    mock.patch.dict(server.ACCOUNT_CHECKED, {}, clear=True), \
+                    mock.patch.object(server, "log"), mock.patch.object(server, "notify"):
+                asyncio.run(server.check_chat_account(chat))
+                return dict(server.CHAT_MEMORY), server.json.loads(accounts.read_text(encoding="utf-8"))
+
+    def test_new_account_clears_that_profiles_chats_only(self):
+        mem, acc = self.run_check({"waseem": "user-old"}, "user-new",
+                                  {"waseem": {"freshape up": {"id": "x"}}, "wajid": {"a": {"id": "y"}}})
+        self.assertEqual(mem["waseem"], {})
+        self.assertEqual(mem["wajid"], {"a": {"id": "y"}})
+        self.assertEqual(acc["waseem"], "user-new")
+
+    def test_same_account_keeps_chats_and_first_run_only_records(self):
+        mem, _ = self.run_check({"waseem": "user-1"}, "user-1", {"waseem": {"c": {"id": "x"}}})
+        self.assertEqual(mem["waseem"], {"c": {"id": "x"}})
+        mem, acc = self.run_check(None, "user-1", {"waseem": {"c": {"id": "x"}}})
+        self.assertEqual(mem["waseem"], {"c": {"id": "x"}})
+        self.assertEqual(acc, {"waseem": "user-1"})
+
+    def test_deleted_remembered_chat_is_forgotten(self):
+        chat = server.Chat("waseem")
+        chat.tab = 1
+        chat.all_chats = mock.AsyncMock(return_value=[{"id": "other", "title": "Other"}])
+
+        async def exec_(role, tab, fn, *a, **k):
+            return []
+
+        with mock.patch.object(server.HUB, "exec", exec_):
+            self.assertFalse(asyncio.run(chat.chat_exists("6aff2749-93d0-83e8-b8bb-c69babd581a3")))
+            chat.all_chats.return_value = [{"id": "6aff2749-93d0-83e8-b8bb-c69babd581a3", "title": "Freshape"}]
+            self.assertTrue(asyncio.run(chat.chat_exists("6aff2749-93d0-83e8-b8bb-c69babd581a3")))
+            chat.all_chats.return_value = [{"id": "6aff2749-93d0-83e8-b8bb-c69babd581a3", "title": "OLD - Freshape"}]
+            self.assertFalse(asyncio.run(chat.chat_exists("6aff2749-93d0-83e8-b8bb-c69babd581a3")))  # OLD = retired
+            chat.all_chats.side_effect = RuntimeError("429")
+            self.assertTrue(asyncio.run(chat.chat_exists("abc")))  # pata na chale -> yaad rakho
+
+
+class RealInstructionsTests(unittest.TestCase):
+    def test_design_file_links_are_not_instructions(self):
+        junk = ("I'll separate them into three individual 4:5 designs rather than one combined layout.\n"
+                "[Post 1](sandbox:/mnt/data/ficus_post_1.png)\n[Post 2](sandbox:/mnt/data/ficus_post_2.png)\n"
+                "[Post 3](sandbox:/mnt/data/ficus_post_3.png)") * 6
+        self.assertFalse(server.real_instructions(junk))
+        self.assertFalse(server.real_instructions("Brand colours teal and navy. " * 15))  # bohat chhoti
+        self.assertTrue(server.real_instructions("Brand: Beyond the Budget. Colours, fonts, logo rules, layouts. " * 40))
+
+    def test_branding_word_in_a_design_request_is_not_an_instructions_ask(self):
+        def m(role, text, t):
+            return {"author": {"role": role}, "create_time": t, "content": {"content_type": "text", "parts": [text]}}
+        msgs = [m("user", "make 3 posts keeping my website branding", 1), m("assistant", "x" * 2000, 2)]
+        with mock.patch.object(server, "ordered_messages", return_value=msgs):
+            self.assertEqual(server.existing_instructions({}), "")
+
+
+class NewChatSetupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_company_chat_gets_approved_designs_with_instructions(self):
+        chat = server.Chat("waseem")
+        chat.tab = 1
+        chat.goto = AsyncMock()
+        chat.send = AsyncMock(return_value=1.0)
+        chat.wait_done = AsyncMock()
+        chat.conv_id = AsyncMock(return_value="6aff3169-0138-83ec-985f-8ceb96a09a3a")
+        chat.api = AsyncMock(return_value={})
+        refs = [Path("D:/x/439.jpg"), Path("D:/x/438.jpg")]
+        with patch.object(server, "ensure_chat_mode", new=AsyncMock()), patch.object(server.HUB, "exec", new=AsyncMock(return_value=[])), \
+                patch.object(server, "style_refs", return_value=refs), patch.object(server, "remember_chat") as remember, \
+                patch.object(server, "run_sleep", new=AsyncMock()), patch.object(server, "log"):
+            await server.create_waseem_chat(chat, "Freshape Up", "Brand rules " * 100)
+        text, files = chat.send.call_args.args
+        self.assertEqual(files, refs)
+        self.assertIn("REAL company logo", text)
+        self.assertIn("do NOT turn them into a file", text)
+        self.assertEqual(len(remember.call_args.kwargs["refs"]), 2)  # baad mein dobara upload nahi
+
+    async def test_wajid_resends_when_message_never_arrived(self):
+        wajid = server.Chat("wajid")
+        wajid.tab = 1
+        wajid.find_chat = AsyncMock(return_value=("cid-1", "Beyond the Budget"))
+        wajid.goto = AsyncMock()
+        wajid.send = AsyncMock(side_effect=[100.0, 200.0])
+        wajid.wait_done = AsyncMock()
+        wajid.generating = AsyncMock(return_value=False)
+        good = "Beyond the Budget brand: colours, fonts, logo, layouts. " * 60
+        def msg(role, text, t):
+            return {"author": {"role": role}, "create_time": t, "content": {"content_type": "text", "parts": [text]}}
+        convs = iter([{"m": []}] + [{"m": []}] * 4 + [{"m": [msg("user", "give me instructions", 201)]}]
+                     + [{"m": [msg("user", "give me instructions", 201), msg("assistant", good, 202)]}] * 3)
+        wajid.conversation = AsyncMock(side_effect=lambda cid: next(convs))
+        with patch.object(server, "Chat", return_value=wajid), \
+                patch.object(server, "ordered_messages", side_effect=lambda c: c["m"]), \
+                patch.object(server, "wajid_chat_loaded", new=AsyncMock(return_value=True)), \
+                patch.object(server, "run_sleep", new=AsyncMock()), patch.object(server, "log"):
+            text = await server.get_instructions_from_wajid("Beyond the Budget", ["Beyond the Budget"], "doc")
+        self.assertEqual(wajid.send.await_count, 2)
+        self.assertEqual(text, good.strip())
+
+
+class Nov20FolderAndSlideTests(unittest.TestCase):
+    def test_typo_number_inside_word_is_not_the_folder_number(self):
+        # 'Enduring Roofin2 1' aur 'Roofin2 2' dono folder '2' mein chali gayi thi
+        for title, want in [("Enduring Roofin2 1.docx - Google Docs", "1"), ("Enduring Roofin2 2.docx - Google Docs", "2"),
+                            ("Enduring Roofing Solution1 (4)", "1"), ("ENDURING ROOFIN1 (4) - Google Docs", "1"),
+                            ("HR Strategy Studio 11 (4)", "11"), ("Booth scout 12-10-26", "12-10-26"),
+                            ("Single Parent 13th(4 posts). -.docx", "13th")]:
+            company = server.company_from_title(server.clean_title(title))
+            self.assertEqual(server.file_number(company, title), want, title)
+
+    def test_ocr_flags_slide_that_shows_another_slides_text(self):
+        outs = [{"name": f"Carousel 1 Slide {i}", "file": f"s{i}.png", "type": "post", "d": {"content": t}}
+                for i, t in [(1, "Your Siding Is Trying to Tell You Something. 4 Warning Signs You Shouldn't Ignore."),
+                             (2, "1. Cracks or Holes Even small openings can expose your home's exterior to moisture.")]]
+        seen = {"s1.png": ["Cracks or Holes", "Even small openings can expose your home's exterior to moisture"],
+                "s2.png": ["1. Cracks or Holes", "Even small openings can expose your home's exterior to moisture"]}
+        with patch.object(server, "_ocr_lines", side_effect=lambda f: seen[f]):
+            bad = asyncio.run(server.ocr_text_problems(outs))
+        self.assertEqual([o["name"] for o, _ in bad], ["Carousel 1 Slide 1"])
+
+    def test_ocr_garbage_from_fancy_font_does_not_fail_the_post(self):
+        outs = [{"name": "Post 1", "file": "p1.png", "type": "post", "d": {"content": "DON'T LET LEFTOVER PRODUCT GET IN THE WAY"}},
+                {"name": "Post 2", "file": "p2.png", "type": "post", "d": {"content": "THE LITTLE ESSENTIAL WITH A BIG JOB."}}]
+        with patch.object(server, "_ocr_lines", return_value=["Dovrur ctrwrHfVAY0F VOURNE SHWPEUP"]):
+            self.assertEqual(asyncio.run(server.ocr_text_problems(outs)), [])
+
+    def test_post_that_failed_twice_keeps_file_out_of_done(self):
+        s = {"manual_todo": ["Post 38 slide 1 [Carousel 1 Slide 1]: 2 dafa try ke baad bhi nahi bani",
+                            "Story post [Story 1]: 2 dafa try ke baad bhi nahi bani"]}
+        server.move_story_issues(s)
+        self.assertEqual(len(s["manual_todo"]), 1)  # story aap khud banate ho, slide file ko adhoora rakhti hai
+        self.assertEqual(len(s["story_skipped"]), 1)
+
+
+class ClosedFilesStayClosedTests(unittest.TestCase):
+    def test_restart_does_not_reopen_files_user_closed(self):
+        marker = {"active": True, "docs": [{"url": "https://docs.google.com/document/d/AAA/edit", "title": "HR Strategy Studio 11"},
+                                           {"url": "https://docs.google.com/document/d/BBB/edit", "title": "Belle 12"}]}
+        calls = []
+
+        async def call(role, cmd, **kw):
+            calls.append(cmd)
+            return [{"url": "https://docs.google.com/document/d/BBB/edit", "title": "Belle 12"}] if cmd == "list_doc_tabs" else 1
+        with work_directory() as tmp:
+            m = Path(tmp) / "run_active.json"
+            m.write_text(server.json.dumps(marker), encoding="utf-8")
+            with patch.object(server, "RUN_MARKER", m), patch.object(server.HUB, "call", side_effect=call), \
+                    patch.object(server.HUB, "clients", {r: 1 for r in server.ROLES}), \
+                    patch.object(server.asyncio, "sleep", AsyncMock()), patch.object(server, "start_run") as start:
+                asyncio.run(server.auto_resume())
+        self.assertNotIn("open_tab", calls)  # AAA aap ne band ki thi -> nahi khuli
+        start.assert_called_once()
+
+
+class DayPostsTests(unittest.TestCase):
+    def test_company_list_language_and_duplicates(self):
+        self.assertEqual(server.clean_company_list(["Sauna Werk | German", " dental  care 4u ", "Dental Care 4U", ""]),
+                         ["Sauna Werk | German", "dental care 4u"])
+        self.assertEqual(server.day_company_line("Sauna Werk | German"), ("Sauna Werk", "German"))
+
+    def test_day_message_uses_company_language_not_exact_english(self):
+        d = server.new_design("post", "Thanksgiving", "Happy Thanksgiving!")
+        d.update(day=True, language="German", image_prompt="day bg")
+        msg, _, _ = server.build_design_message("Sauna Werk", [d])
+        self.assertIn("in German", msg)
+        self.assertIn("Happy Thanksgiving!\nEND OF TEXT", msg)
+        self.assertNotIn("EXACT HEADING TO PRINT", msg)
+
+    def test_day_post_saved_as_company_jpg_in_day_folder(self):
+        from PIL import Image
+        with work_directory() as tmp:
+            tmp = Path(tmp)
+
+            async def fake_generate(waseem, cid, company, designs, out_dir, summary):
+                self.assertTrue(designs[0]["day"])
+                Image.new("RGB", (40, 50), "red").save(Path(summary["final_override"]) / "Post 1.png")
+            with patch.dict(server.CFG, {"final_dir": str(tmp)}), \
+                    patch.object(server, "resolve_company_chat", AsyncMock(return_value=("cid1", None))), \
+                    patch.object(server, "generate_and_download", side_effect=fake_generate):
+                waseem = SimpleNamespace(goto=AsyncMock())
+                (tmp / "out" / "final").mkdir(parents=True)
+                dest = asyncio.run(server.make_day_post(waseem, "Thanksgiving", "Happy!", "Dental Care 4U", tmp / "out"))
+            self.assertEqual(dest, tmp / "Days" / "Thanksgiving" / "Dental Care 4U.jpg")
+            self.assertEqual(Image.open(dest).format, "JPEG")
+
+    def test_day_start_refused_while_files_are_running(self):
+        with work_directory() as tmp, patch.object(server, "DAYS_FILE", Path(tmp) / "d.json"), \
+                patch.object(server.HUB, "running", True):
+            r = server.dashboard_days("day_start", {"day": "Thanksgiving", "brief": "Hi", "companies": '["A"]'})
+        self.assertFalse(r["ok"])
+
+
+class DayRecordTests(unittest.TestCase):
+    def test_each_year_is_its_own_record_and_folder(self):
+        async def go():
+            with patch.object(server, "run_days", AsyncMock()):
+                return server.dashboard_days("day_start", {"day": "Thanksgiving", "brief": "Hi", "companies": '["A"]'})
+        with work_directory() as tmp, patch.object(server, "DAYS_FILE", Path(tmp) / "d.json"), \
+                patch.object(server.HUB, "running", False), patch.object(server.HUB, "run_task", None):
+            r = asyncio.run(go())
+            server.HUB.running = False
+            data = server.load_days()
+        year = str(server.datetime.now().year)
+        self.assertTrue(r["ok"])
+        self.assertEqual(list(data["jobs"]), [f"thanksgiving {year}"])
+        self.assertTrue(r["jobs"][0]["folder"].endswith(f"Thanksgiving {year}"))

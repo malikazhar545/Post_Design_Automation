@@ -14,13 +14,15 @@
     "idle_after_images": 2.0
   },
   "wajid_ask_message": "give me whole instructions of this company to give it to other chat gpt",
-  "waseem_save_message": "save this company instructions. Logo: if you have this company's logo use it in the posts, otherwise use \"{company}\" as placeholder text in place of the logo (i will replace logo there)",
+  "waseem_save_message": "save this company instructions for every design in this chat. Keep them here in this chat — do NOT turn them into a file, document or library entry and do not use code. Reply with a short summary of the key rules (colours, fonts, layout style, logo). Logo: use the exact {company} logo from my approved designs / uploaded logo; never redraw or invent a logo. Only if no logo is visible anywhere, use \"{company}\" as placeholder text in place of the logo (i will replace logo there)",
+  "create_refs_note": "The {n} attached images are MY OWN APPROVED {company} designs: the logo in them is the REAL company logo — use exactly that logo in every post/story. Match their typography, colours, layout richness, lighting and overall quality in all future designs. Do not copy their text. Do NOT generate any image now.",
   "design_rules": [
+    "IMAGE TOOL ONLY: make every design DIRECTLY with ChatGPT's built-in image generation, as ONE complete finished image — background, photo, every line of text and the logo rendered inside that generated image. Do NOT use Python, code, PIL, canvas, the sandbox or any file/editing tool; do NOT build a background first and then typeset or overlay text with code; do NOT return a downloadable or sandbox file. Show the finished generated image itself in this chat.",
     "Create exactly {count} standalone image file(s) in my {company} branding. ONE design per file. NEVER create a collage, grid, contact sheet, split screen, side-by-side comparison, or multiple panels within one image.",
     "Sizes: every post must be 4:5 size, every story must be 9:16 size, every mockup must be 4:5 size.",
     "MOST IMPORTANT: follow ALL of {company}'s saved instructions in this chat — colors, fonts, style, layouts AND special looks such as 3D effects, 3D text, depth, shadows, textures or product renders. These company instructions are mandatory and OVERRIDE the general rules below. Keep the SAME look and quality as this company's earlier approved designs in this chat — do not make it plain or simpler than before.",
     "VARIETY: every design must have its OWN different layout — change the composition, text placement, image/product placement, angle, background treatment and visual focus for each one. Do NOT reuse one template for all of them, and do not copy the layout of this company's most recent designs in this chat. Keep the same {company} brand style (colors, fonts, logo, 3D/look) across all — only the layout changes.",
-    "LOGO: if you have the {company} logo (uploaded or saved in this chat), use that exact logo on every post/story design (NOT on product mockups). If there is no logo, write the company name \"{company}\" as placeholder text in the logo position.",
+    "LOGO: use the exact {company} logo shown in my approved reference designs (or the uploaded logo file) in this chat on every post/story design (NOT on product mockups) — copy it exactly, never redraw, restyle or invent a logo. Only if no logo is visible anywhere in this chat, write the company name \"{company}\" as placeholder text in the logo position.",
     "No random decorative graphics or color blobs — UNLESS {company}'s own instructions use them (e.g. 3D effects, shapes, icons): then follow the company instructions exactly.",
     "Do NOT add any extra content — use only the exact text I gave for each design (or the text in the Instagram screenshot).",
     "Do not overload the design and no oversized text — but keep the company's own visual style (3D, depth, effects) exactly as its instructions say. Natural does NOT mean plain.",
@@ -100,7 +102,9 @@
   "style_ref_note": "STYLE REFERENCE — uploaded file(s) {n} are MY OWN APPROVED designs for {company}. This is the exact quality and style I need: match their typography (font weight/style, highlighted keyword colour and underline treatment), logo usage and placement (the logo in them is the real company logo — use it the same way), visual richness, 3D renders, lighting, glow/smoke effects and composition standard. Do NOT copy their text or reuse one of their exact layouts — create a NEW layout for this post at the same level. Never make it plainer or more generic than these.",
   "style_ref_again": "Keep matching the design quality of my APPROVED {company} style references uploaded earlier in this chat (same richness, 3D/depth, lighting, effects) — never plainer.",
   "style_refs_dirs": [
-    "D:/Azhar/October/Posts",
+    "D:/Azhar/November 2026/Posts",
+    "D:/Azhar/October 2026/Posts",
+    "D:/Azhar/September 2026/Posts",
     "style_refs"
   ],
   "style_refs_min_match": 0.8,
@@ -113,6 +117,9 @@
   "mockups_in_one_message": false,
   "mockup_pair_note": "Generate exactly 2 SEPARATE images in this order: image 1 = {a} (product placed in a scene), image 2 = {b} (product worn by a person / in real use). They are two DIFFERENT scenes, NOT two versions of the same image. Each is its own standalone file — no collage, grid or panels.",
   "refs_branding_message": "BRANDING FROM MY APPROVED DESIGNS — the attached images are my own approved social media designs for {company}. Study them carefully and save {company}'s branding from them for all future designs in this chat: the exact logo (use it the same way — never redraw or invent a different logo), brand colour palette, heading and body typography (font style, weights, highlighted keyword treatment), layout style, imagery style, 3D/lighting/effects and overall design quality. Future designs must look like they belong to this same brand at this same quality. Do not copy their text. Do NOT generate any image now — just reply with a short summary of the branding you saved.",
+  "day_image_note": "SPECIAL DAY POST: {day} for {company}. Balance TWO themes in one design: (1) {company}'s OWN branding: the exact logo from my approved designs / saved instructions, its brand colours in the text and accents, its fonts and layout style; (2) the typical {day} theme: the day's own classic colours, decorations and symbols in parts of the design. BACKGROUND: a natural, realistic scene that fits {company}'s OWN business (e.g. dental clinic -> dental / smile setting, roofing -> homes and roofs, sauna -> sauna) with a warm {day} touch, natural tones, not cartoonish or overloaded. It must look like {company}'s {day} post, not a generic greeting card. Never print any of these direction words on the image.",
+  "day_text_note": "TEXT TO PRINT ON THE IMAGE, in {language}. If that language is not English, translate the text below faithfully and naturally into it (keep names of days/brands correct for that language); if it is English, print it exactly. Print only this text (plus the logo) — every line, nothing added:",
+  "days_folder": "Days",
   "image_prompt_note": "IMAGE DIRECTION FROM THE WRITER (no photo is given — create the visual yourself exactly as described below, in this company's saved branding: logo, colours, fonts and style). This direction is ONLY for how the image should look — NEVER print any of its words on the image. The ONLY text on the image is the exact heading below — do not add any other text, titles, labels, taglines, UI text or extra content that the writer did not give. Keep it clean, not overloaded:",
   "batch_mode": true,
   "max_images_per_message": 10,

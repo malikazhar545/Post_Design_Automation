@@ -76,12 +76,26 @@ class WebsiteWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(server, "get_instructions_from_wajid", new=AsyncMock(side_effect=server.BrandChatNotFound())) as wajid, \
              patch.object(server, "collect_website_branding", new=AsyncMock(return_value=brand)) as website, \
              patch.object(server, "create_waseem_chat", new=AsyncMock(return_value="new-cid")) as create, \
-             patch.object(server, "log"):
+             patch.object(server, "style_refs", return_value=[]), patch.object(server, "log"):
             result = await server.resolve_company_chat(chat, "Laima Academy", ["Laima Academy", "Laima"], "document", Path("output"))
         self.assertEqual(result, ("new-cid", brand))
         wajid.assert_awaited_once()
         website.assert_awaited_once()
         self.assertEqual(create.call_args.kwargs["files"], [Path("logo.png")])
+
+    async def test_approved_designs_beat_website_when_wajid_has_no_chat(self):
+        chat = server.Chat("waseem")
+        chat.find_chat = AsyncMock(return_value=(None, None))
+        refs = [Path("a.jpg"), Path("b.jpg")]
+        with patch.object(server, "get_instructions_from_wajid", new=AsyncMock(side_effect=server.BrandChatNotFound())), \
+             patch.object(server, "collect_website_branding", new=AsyncMock()) as website, \
+             patch.object(server, "create_waseem_chat", new=AsyncMock(return_value="new-cid")) as create, \
+             patch.object(server, "style_refs", return_value=refs), patch.object(server, "remember_chat"), \
+             patch.object(server, "log"):
+            result = await server.resolve_company_chat(chat, "Freshape Up", ["Freshape Up"], "document", Path("output"))
+        self.assertEqual(result, ("new-cid", None))
+        website.assert_not_awaited()
+        self.assertEqual(create.call_args.kwargs["files"], refs)
 
     async def test_existing_chat_skips_website_and_connection_error_is_not_missing_chat(self):
         chat = server.Chat("waseem")

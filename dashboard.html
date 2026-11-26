@@ -280,6 +280,12 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 #referenceForm input, #referenceForm textarea { width:100%; min-height:44px; padding:12px; border:1px solid var(--line-2); border-radius:8px; background:var(--bg-2); color:var(--text); font:inherit; }
 #referenceForm textarea { font-family:var(--mono); resize:vertical; }
+#dayForm input, #dayForm textarea { width:100%; min-height:44px; padding:12px; border:1px solid var(--line-2); border-radius:8px; background:var(--bg-2); color:var(--text); font:inherit; }
+#dayForm textarea { resize:vertical; line-height:1.45; }
+.g-item.bad { border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.day-job + .day-job { border-top: 1px solid var(--line); }
+.day-job h3 { margin: 0; font-size: 15px; }
+.day-job .card-b { display: grid; gap: 8px; }
 #referenceStatus { overflow-wrap:anywhere; }
 </style>
 </head>
@@ -341,6 +347,7 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
     <button class="tab" role="tab" id="t-history" aria-controls="v-history" aria-selected="false"><svg class="icon sm"><use href="#i-cal"/></svg>History</button>
     <button class="tab" role="tab" id="t-log" aria-controls="v-log" aria-selected="false"><svg class="icon sm"><use href="#i-term"/></svg>Live log</button>
     <button class="tab" role="tab" id="t-alerts" aria-controls="v-alerts" aria-selected="false"><svg class="icon sm"><use href="#i-bell"/></svg>Alerts <span class="badge" id="alertBadge" hidden>0</span></button>
+    <button class="tab" role="tab" id="t-days" aria-controls="v-days" aria-selected="false"><svg class="icon sm"><use href="#i-spark"/></svg>Days</button>
     <button class="tab" role="tab" id="t-references" aria-controls="v-references" aria-selected="false"><svg class="icon sm"><use href="#i-image"/></svg>References</button>
   </nav>
 </header>
@@ -370,6 +377,42 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
           <button class="btn" type="button" id="referenceReset">Use automatic latest 4</button>
         </div>
       </form>
+    </div>
+  </section>
+
+  <!-- DAYS -->
+  <section class="view" id="v-days" role="tabpanel" aria-labelledby="t-days" hidden>
+    <div class="stack" style="max-width:900px">
+      <div class="card">
+        <div class="card-h"><svg class="icon"><use href="#i-spark"/></svg><h2>Day post banao</h2></div>
+        <form class="card-b stack" id="dayForm">
+          <p class="muted">Day ka naam aur common text likho. Neeche wali har company ka EK post banega: company ki apni branding aur logo,
+            background company ke kaam ka (dental ho to dental) aur day ka touch. Text company ki apni zaban mein (German company = German).
+            Branding na mile to company ke aakhri folder ke designs reference bante hain. Files: <b>Downloads\Days\&lt;Day Saal&gt;\&lt;Company&gt;.jpg</b> (jaise Thanksgiving 2026)</p>
+          <label for="dayName">Day ka naam</label>
+          <input id="dayName" required maxlength="80" autocomplete="off" placeholder="Example: Thanksgiving">
+          <label for="dayBrief">Common text (sab companies par yahi likha jayega)</label>
+          <textarea id="dayBrief" rows="5" required placeholder="Happy Thanksgiving!&#10;Grateful for you — today and every day."></textarea>
+          <div id="dayStatus" role="status" class="muted"></div>
+          <div class="actions">
+            <button class="btn primary" type="submit" id="dayStart"><svg class="icon sm"><use href="#i-play"/></svg>Sab companies ke liye banao</button>
+            <span class="muted" id="dayCount"></span>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <div class="card-h"><svg class="icon"><use href="#i-layers"/></svg><h2>Day companies</h2><span class="muted">save rehti hain — har day par yahi list</span></div>
+        <form class="g-add" id="dayCoForm"><label class="sr" for="dayCoName">Company naam</label>
+          <textarea id="dayCoName" rows="2" placeholder="Company naam — poori list paste karo. Zaban khud likhni ho: Sauna Werk | German" autocomplete="off"></textarea>
+          <button class="btn" type="submit">Add</button></form>
+        <div class="g-items" id="dayCoItems"></div>
+        <div class="g-status"><span class="muted">Zaban na likho to company ki purani posts / references wali zaban.</span><span class="spacer"></span>
+          <button class="btn sm ghost" type="button" id="dayCoClear">List khaali karo</button></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><svg class="icon"><use href="#i-cal"/></svg><h2>Bane hue days</h2><span class="muted">poora record — har saal alag</span></div>
+        <div id="dayJobs"><div class="empty">Abhi koi day nahi bana</div></div>
+      </div>
     </div>
   </section>
 
@@ -526,6 +569,7 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
     store.set("tab", name);
     if (name === "history") loadHistory();
     if (name === "references") loadReferences();
+    if (name === "days") loadDays();
     if (name === "alerts") { store.set("seenAlert", alertSeq); updateBadge(); }
     if (name === "log") renderLogFull(true);
   }
@@ -693,6 +737,66 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
   $("#referenceForm").addEventListener("submit", event => {event.preventDefault(); saveReferences(false);});
   $("#referenceReset").onclick = () => saveReferences(true);
 
+  /* ---------- days (Thanksgiving, Christmas...) ---------- */
+  let dayData = { companies: [], jobs: [] };
+  const dayCoName = line => line.split("|")[0].trim().toLowerCase().replace(/\s+/g, " ");
+  async function dayAct(params, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch("/api/action?" + new URLSearchParams(params), { headers: { "X-Dashboard": "1" } });
+      const j = await r.json();
+      if (j.message) note(j.message, j.ok);
+      if (j.companies) { dayData = j; renderDays2(); }
+      return j;
+    } catch { note("Server se jawab nahi aaya", false); }
+    finally { if (btn) btn.disabled = false; }
+  }
+  const saveDayCompanies = list => dayAct({ do: "day_save_companies", companies: JSON.stringify(list) });
+  async function loadDays() {
+    try { dayData = await (await fetch("/api/days", { cache: "no-store" })).json(); renderDays2(); } catch {}
+  }
+  function renderDays2() {
+    const cos = dayData.companies || [];
+    $("#dayCoItems").innerHTML = cos.length ? cos.map((c, i) => `<span class="g-item">${esc(c)}
+        <button type="button" data-dayrm="${i}" aria-label="${esc(c)} list se hatao">${ico("close", "icon sm")}</button></span>`).join("")
+      : `<span class="muted">List khaali — upar company ka naam add karo</span>`;
+    $$("[data-dayrm]").forEach(b => b.onclick = () => saveDayCompanies(cos.filter((_, i) => i !== +b.dataset.dayrm)));
+    $("#dayCount").textContent = `${cos.length} companies`;
+    $("#dayStart").disabled = !!dayData.running;
+    $("#dayStatus").textContent = dayData.running ? (dayData.days_running ? "Day posts ban rahi hain — Aaj tab / Live log mein dekho" : "Abhi files ban rahi hain — woh khatam ho jayen phir day banao") : "";
+    const jobs = dayData.jobs || [];
+    $("#dayJobs").innerHTML = jobs.length ? jobs.map(j => {
+      const items = (j.companies || []).map(c => {
+        const r = (j.results || {})[dayCoName(c)] || {};
+        const cls = r.status === "done" ? "found" : r.status === "error" ? "bad" : "";
+        const tip = r.status === "done" ? r.file : r.status === "error" ? r.error : "abhi nahi bani";
+        const redo = r.status ? `<button type="button" data-dayredo="${esc(dayCoName(c))}" data-day="${esc(j.key)}" aria-label="${esc(c)} dobara banao" title="Dobara banao">${ico("refresh", "icon sm")}</button>` : "";
+        return `<span class="g-item ${cls}" title="${esc(tip || "")}">${r.status === "done" ? ico("check", "icon sm") : r.status === "error" ? ico("x", "icon sm") : ""}${esc(c.split("|")[0].trim())}${redo}</span>`;
+      }).join("");
+      const done = Object.values(j.results || {}).filter(r => r.status === "done").length;
+      return `<div class="day-job"><div class="card-b">
+        <div class="actions"><h3>${esc(j.title || j.day)}</h3><span class="muted">${done} / ${(j.companies || []).length} bani · ${esc((j.at || "").slice(0, 16).replace("T", " "))}</span>
+          <span class="spacer"></span><button class="btn sm" type="button" data-dayuse="${esc(j.key)}">Text wapis lo</button></div>
+        <div class="muted" style="white-space:pre-wrap">${esc(j.brief || "")}</div>
+        <div class="g-items" style="padding:0">${items}</div>${folderHtml(j.folder)}</div></div>`;
+    }).join("") : `<div class="empty">Abhi koi day nahi bana</div>`;
+    $$("[data-dayredo]").forEach(b => b.onclick = () => dayAct({ do: "day_redo", key: b.dataset.day, company: b.dataset.dayredo }, b));
+    $$("[data-dayuse]").forEach(b => b.onclick = () => { const j = jobs.find(x => x.key === b.dataset.dayuse);
+      if (j) { $("#dayName").value = j.day; $("#dayBrief").value = j.brief || ""; $("#dayName").focus(); } });
+  }
+  $("#dayCoForm").onsubmit = e => { e.preventDefault();
+    const add = $("#dayCoName").value.split(/[\r\n\t]+/).map(s => s.trim()).filter(Boolean); if (!add.length) return;
+    $("#dayCoName").value = ""; saveDayCompanies([...(dayData.companies || []), ...add]); };
+  $("#dayCoName").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#dayCoForm").requestSubmit(); } });
+  $("#dayCoClear").onclick = () => { if (confirm("Day companies ki list khaali karein?")) saveDayCompanies([]); };
+  $("#dayForm").onsubmit = async e => { e.preventDefault();
+    const day = $("#dayName").value.trim(), brief = $("#dayBrief").value.trim();
+    if (!day || !brief) { $("#dayStatus").textContent = "Day ka naam aur text dono likho."; return; }
+    if (!(dayData.companies || []).length) { $("#dayStatus").textContent = "Pehle neeche companies add karo."; return; }
+    if (!confirm(`${day}: ${dayData.companies.length} companies ke posts banaun?`)) return;
+    await dayAct({ do: "day_start", day, brief }, $("#dayStart")); };
+  setInterval(() => online && !$("#v-days").hidden && loadDays(), 5000);
+
   /* ---------- render: header ---------- */
   function renderHeader(s) {
     const pill = $("#statusPill");
@@ -715,6 +819,12 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
     const last = logs.length ? parseLine(logs[logs.length - 1].line) : null;
     let icon = "moonsleep", cls = "st-idle", title, sub = "", side = "", sideLbl = "";
     if (!s) { cls = "st-off"; icon = "power"; title = "Server band hai"; sub = "START_SERVER.bat chalao"; }
+    else if (c && c.day) {  // Days: Thanksgiving / Christmas posts
+      cls = s.paused ? "st-paused" : "st-running"; icon = s.paused ? "pause" : "spark";
+      title = (s.paused ? "Ruka hua: " : "") + `${c.day} post ban raha hai: ${c.company}`;
+      sub = `Company ${c.i} / ${c.total} · ${c.made} ban gaye · ${Math.max(0, c.total - c.made)} baqi`;
+      side = fmtDur(Date.now() / 1000 - c.since); sideLbl = "is company par";
+    }
     else if (c && c.file) {
       cls = s.paused ? "st-paused" : "st-running"; icon = s.paused ? "pause" : "activity";
       title = (s.paused ? "Ruka hua: " : "Ban rahi hai: ") + c.file;
@@ -733,13 +843,13 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
     $("#nowTime").textContent = side; $("#nowTimeLbl").textContent = sideLbl;
     prog.hidden = !(c && c.file);
     const sk = $("#nowSkip");
-    sk.hidden = !(c && c.file);
+    sk.hidden = !(c && c.file) || !!(c && c.day);  // day post: file skip ka button nahi
     if (c && c.file) {
       sk.querySelector("span").textContent = s.current_skip ? "Skip wapis lao" : "Is file ko skip karo";
       sk.classList.toggle("danger", !s.current_skip);
       sk.onclick = () => skipFile(c.file, s.current_skip ? "unskip" : "skip", true, sk);
     }
-    if (c && c.file) prog.firstElementChild.style.width = Math.round(((c.i - 1) / Math.max(1, c.total)) * 100) + "%";
+    if (c && c.file) prog.firstElementChild.style.width = Math.round(((c.day ? c.made : c.i - 1) / Math.max(1, c.total)) * 100) + "%";
   }
 
   async function skipFile(f, d, now, btn) {
@@ -987,7 +1097,7 @@ tr.sub .folder-row, tr .folder-row { margin-top: 6px; }
   poll(); setInterval(poll, 2000);
   setInterval(() => lastState && renderNow(lastState), 1000);
   const urlTab = new URLSearchParams(location.search).get("tab");
-  showTab(["today", "history", "log", "alerts", "references"].includes(urlTab) ? urlTab : store.get("tab", "today"));
+  showTab(["today", "history", "log", "alerts", "references", "days"].includes(urlTab) ? urlTab : store.get("tab", "today"));
 })();
 </script>
 </body>
